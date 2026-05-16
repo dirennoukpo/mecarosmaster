@@ -23,6 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-${ROS_DISTRO}-sensor-msgs \
     ros-${ROS_DISTRO}-geometry-msgs \
     ros-${ROS_DISTRO}-nav-msgs \
+    ros-${ROS_DISTRO}-xacro    \
     ros-${ROS_DISTRO}-trajectory-msgs \
     ros-${ROS_DISTRO}-std-msgs \
     ros-${ROS_DISTRO}-std-srvs \
@@ -49,12 +50,13 @@ WORKDIR /mecarosmaster_ws
 
 RUN bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
     if [ \"\$(find src -name 'package.xml' | wc -l)\" -gt 0 ]; then \
+        apt-get update && \
         rosdep install --from-paths src --ignore-src -r -y && \
         colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release; \
     else \
         echo '[INFO] Aucun package, build ignoré.'; \
     fi && \
-    rm -rf build log /root/.ros"
+    rm -rf /var/lib/apt/lists/* build log /root/.ros"
 
 # Sourcing pour root (sessions debug)
 RUN printf '%s\n' \

@@ -5,11 +5,11 @@
 ** Login   <diren.noukpo@epitech.eu>
 **
 ** Started on  Sat May 16 07:41:02 2026 dirennoukpo
-** Last update Sun May 16 17:28:43 2026 dirennoukpo
+** Last update Sun May 16 17:47:36 2026 dirennoukpo
 */
 
 // mecamate_hardware.hpp
-// ros2_control SystemInterface for Mecaromaster (mecanum / differential)
+// ros2_control SystemInterface for Mecarosmaster (mecanum / differential)
 //
 // Implements the hardware interface layer so that standard ros2_control
 // controllers (diff_drive_controller, mecanum_drive_controller,
@@ -23,8 +23,8 @@
 //       │       reads: odom, publishes: cmd_vel
 //       │
 //       └─► MecarosmasterHardware  ← YOU ARE HERE
-//               reads:  Mecaromaster encoder ticks  → state interfaces (pos / vel)
-//               writes: Mecaromaster set_car_motion  ← command interfaces (vel)
+//               reads:  Mecarosmaster encoder ticks  → state interfaces (pos / vel)
+//               writes: Mecarosmaster set_car_motion  ← command interfaces (vel)
 //
 // ── Interfaces exposed ────────────────────────────────────────────────────────
 //   State   (per wheel joint): position [rad], velocity [rad/s]
@@ -92,7 +92,7 @@ private:
     double      wheel_sep_y_    = 0.12;    // half wheel-base left/right [m]
 
     // ── Driver ────────────────────────────────────────────────────────────────
-    std::unique_ptr<Mecaromaster> robot_;
+    std::unique_ptr<Mecarosmaster> robot_;
 
     // ── Joint state & command (FL, FR, RL, RR order) ─────────────────────────
     // 4 wheels × {position, velocity}
@@ -106,8 +106,8 @@ private:
     rclcpp::Time          prev_time_{0, 0, RCL_ROS_TIME};
 
     // ── Helpers ───────────────────────────────────────────────────────────────
-    // rad/s → motor "speed" in the Mecaromaster protocol
-    // Mecaromaster set_car_motion wants m/s and rad/s in the body frame.
+    // rad/s → motor "speed" in the Mecarosmaster protocol
+    // Mecarosmaster set_car_motion wants m/s and rad/s in the body frame.
     // We derive vx, vy, vz from wheel commands using mecanum kinematics.
     void computeBodyVelocity(double& vx, double& vy, double& vz) const;
 };
@@ -153,7 +153,7 @@ inline CallbackReturn
 MecarosmasterHardware::on_configure(const rclcpp_lifecycle::State&)
 {
     try {
-        robot_ = std::make_unique<Mecaromaster>(
+        robot_ = std::make_unique<Mecarosmaster>(
             car_type_, serial_port_, cmd_delay_, debug_);
     } catch (const std::exception& e) {
         RCLCPP_FATAL(rclcpp::get_logger("MecarosmasterHardware"),
@@ -245,7 +245,7 @@ MecarosmasterHardware::read(const rclcpp::Time& time, const rclcpp::Duration& pe
     return return_type::OK;
 }
 
-// ── WRITE: command interfaces → Mecaromaster body-frame motion ───────────────────
+// ── WRITE: command interfaces → Mecarosmaster body-frame motion ───────────────────
 inline return_type
 MecarosmasterHardware::write(const rclcpp::Time&, const rclcpp::Duration&)
 {
