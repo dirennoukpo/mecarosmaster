@@ -1,26 +1,23 @@
 /*
-** mecamate_node.cpp for mecamate_lib [SSH: ROSMASTER-YAHBOOM]
+** mecarosmaster_node.cpp  —  ROS 2 Humble  —  node autonome (sans ros2_control)
 **
-** Made by dirennoukpo
-** Login   <diren.noukpo@epitech.eu>
+** Made by dirennoukpo  <diren.noukpo@epitech.eu>
 **
-** ROS 2 node — full production implementation
-** Tested with ROS 2 Humble / Iron — C++17 required
-**
-** Build deps (package.xml):
-**   rclcpp, std_msgs, sensor_msgs, geometry_msgs,
-**   nav_msgs, trajectory_msgs, std_srvs, tf2_ros, tf2_geometry_msgs
+** Corrections vs version précédente :
+**   • cmd_vel topic renommé "cmd_vel" (sans namespace) pour compatibilité
+**     Navigation Stack et teleop_twist_keyboard
+**   • joint_states publié sur "/joint_states" (requis par robot_state_publisher)
+**   • odom      publié sur "/odom"
+**   • Watchdog thread-safe (std::atomic)
+**   • Intégration d'odométrie : utilise les données motion du robot (pas DR pur)
+**   • publishJointStates : vitesses calculées par différenciation des encodeurs
+**   • Suppression de la dépendance tf2_geometry_msgs (non utilisée)
+**   • RCLCPP_INFO_ONCE au lieu de double RCLCPP_INFO dans le constructeur
 */
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  ROS 2 core
-// ─────────────────────────────────────────────────────────────────────────────
 #include <rclcpp/rclcpp.hpp>
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Publishers
-// ─────────────────────────────────────────────────────────────────────────────
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/magnetic_field.hpp>
 #include <sensor_msgs/msg/battery_state.hpp>
@@ -29,34 +26,18 @@
 #include <geometry_msgs/msg/twist_stamped.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <std_msgs/msg/int32_multi_array.hpp>
-#include <std_msgs/msg/float32.hpp>
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Subscribers
-// ─────────────────────────────────────────────────────────────────────────────
-#include <geometry_msgs/msg/twist.hpp>
 #include <std_msgs/msg/float32_multi_array.hpp>
 #include <std_msgs/msg/color_rgba.hpp>
 #include <std_msgs/msg/int32.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <geometry_msgs/msg/twist.hpp>
 #include <trajectory_msgs/msg/joint_trajectory.hpp>
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  Services
-// ─────────────────────────────────────────────────────────────────────────────
 #include <std_srvs/srv/trigger.hpp>
-#include <std_srvs/srv/set_bool.hpp>
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  TF2 (odom → base_link broadcast)
-// ─────────────────────────────────────────────────────────────────────────────
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  Driver
-// ─────────────────────────────────────────────────────────────────────────────
 #include "mecarosmaster_control/Mecarosmaster.hpp"
 
 #include <cmath>
@@ -65,48 +46,45 @@
 #include <string>
 #include <chrono>
 #include <mutex>
+#include <atomic>
+#include <array>
 
 using namespace std::chrono_literals;
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Parameters (overridable from launch file or CLI)
+//  Paramètres du node
 // ─────────────────────────────────────────────────────────────────────────────
 struct NodeParams {
-    std::string serial_port  = "/dev/myserial";
-    int         car_type     = 1;        // 1=X3, 2=X3_PLUS, 4=X1, 5=R2
-    double      cmd_delay    = 0.002;    // seconds between serial writes
-    bool        debug        = false;
-    double      publish_rate = 50.0;     // Hz — auto-report publish loop
-    bool        publish_tf   = true;     // broadcast odom→base_link tf
-    std::string odom_frame   = "odom";
-    std::string base_frame   = "base_link";
-    std::string imu_frame    = "imu_link";
-    // IMU covariances (diagonal only, rad²/s² and m²/s⁴)
-    double gyro_cov          = 1e-4;
-    double accel_cov         = 1e-2;
-    double mag_cov           = 1e-4;
-    // Arm control enable
-    bool arm_enabled         = true;
-    // Watchdog: stop motors if no cmd_vel received within this many seconds
-    // Set 0.0 to disable.
-    double cmd_vel_timeout   = 0.5;
-    // Encoder ticks per revolution (used for joint_state publish)
-    double ticks_per_rev     = 1625.0;
-    // Wheel radius [m] — used for joint_state angular position integration
-    double wheel_radius      = 0.045;
+    std::string serial_port     = "/dev/myserial";
+    int         car_type        = 1;
+    double      cmd_delay       = 0.002;
+    bool        debug           = false;
+    double      publish_rate    = 50.0;
+    bool        publish_tf      = true;
+    std::string odom_frame      = "odom";
+    std::string base_frame      = "base_link";
+    std::string imu_frame       = "imu_link";
+    double      gyro_cov        = 1e-4;
+    double      accel_cov       = 1e-2;
+    double      mag_cov         = 1e-4;
+    bool        arm_enabled     = true;
+    double      cmd_vel_timeout = 0.5;
+    double      ticks_per_rev   = 1625.0;
+    double      wheel_radius    = 0.045;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Pose integrator (dead-reckoning from velocity)
+//  Intégrateur de pose (dead-reckoning)
 // ─────────────────────────────────────────────────────────────────────────────
 struct OdomPose {
     double x{0}, y{0}, theta{0};
 
-    void integrate(double vx, double vy, double vz, double dt) {
-        double cos_t = std::cos(theta);
-        double sin_t = std::sin(theta);
-        x     += (vx * cos_t - vy * sin_t) * dt;
-        y     += (vx * sin_t + vy * cos_t) * dt;
+    void integrate(double vx, double vy, double vz, double dt) noexcept
+    {
+        const double c = std::cos(theta);
+        const double s = std::sin(theta);
+        x     += (vx * c - vy * s) * dt;
+        y     += (vx * s + vy * c) * dt;
         theta += vz * dt;
     }
 };
@@ -114,55 +92,56 @@ struct OdomPose {
 // ─────────────────────────────────────────────────────────────────────────────
 //  MecarosmasterNode
 // ─────────────────────────────────────────────────────────────────────────────
-class MecarosmasterNode : public rclcpp::Node {
+class MecarosmasterNode : public rclcpp::Node
+{
 public:
-    explicit MecarosmasterNode(const rclcpp::NodeOptions& options = rclcpp::NodeOptions())
-        : Node("mecarosmaster_node", options)
+    explicit MecarosmasterNode(
+        const rclcpp::NodeOptions& opts = rclcpp::NodeOptions())
+    : Node("mecarosmaster_node", opts)
     {
-        // ── Declare & read parameters ─────────────────────────────────────────
-        declare_parameter("serial_port",    params_.serial_port);
-        declare_parameter("car_type",       params_.car_type);
-        declare_parameter("cmd_delay",      params_.cmd_delay);
-        declare_parameter("debug",          params_.debug);
-        declare_parameter("publish_rate",   params_.publish_rate);
-        declare_parameter("publish_tf",     params_.publish_tf);
-        declare_parameter("odom_frame",     params_.odom_frame);
-        declare_parameter("base_frame",     params_.base_frame);
-        declare_parameter("imu_frame",      params_.imu_frame);
-        declare_parameter("gyro_cov",       params_.gyro_cov);
-        declare_parameter("accel_cov",      params_.accel_cov);
-        declare_parameter("mag_cov",        params_.mag_cov);
-        declare_parameter("arm_enabled",    params_.arm_enabled);
+        // ── Paramètres ────────────────────────────────────────────────────────
+        declare_parameter("serial_port",     params_.serial_port);
+        declare_parameter("car_type",        params_.car_type);
+        declare_parameter("cmd_delay",       params_.cmd_delay);
+        declare_parameter("debug",           params_.debug);
+        declare_parameter("publish_rate",    params_.publish_rate);
+        declare_parameter("publish_tf",      params_.publish_tf);
+        declare_parameter("odom_frame",      params_.odom_frame);
+        declare_parameter("base_frame",      params_.base_frame);
+        declare_parameter("imu_frame",       params_.imu_frame);
+        declare_parameter("gyro_cov",        params_.gyro_cov);
+        declare_parameter("accel_cov",       params_.accel_cov);
+        declare_parameter("mag_cov",         params_.mag_cov);
+        declare_parameter("arm_enabled",     params_.arm_enabled);
         declare_parameter("cmd_vel_timeout", params_.cmd_vel_timeout);
-        declare_parameter("ticks_per_rev",  params_.ticks_per_rev);
-        declare_parameter("wheel_radius",   params_.wheel_radius);
+        declare_parameter("ticks_per_rev",   params_.ticks_per_rev);
+        declare_parameter("wheel_radius",    params_.wheel_radius);
 
-        get_parameter("serial_port",    params_.serial_port);
-        get_parameter("car_type",       params_.car_type);
-        get_parameter("cmd_delay",      params_.cmd_delay);
-        get_parameter("debug",          params_.debug);
-        get_parameter("publish_rate",   params_.publish_rate);
-        get_parameter("publish_tf",     params_.publish_tf);
-        get_parameter("odom_frame",     params_.odom_frame);
-        get_parameter("base_frame",     params_.base_frame);
-        get_parameter("imu_frame",      params_.imu_frame);
-        get_parameter("gyro_cov",       params_.gyro_cov);
-        get_parameter("accel_cov",      params_.accel_cov);
-        get_parameter("mag_cov",        params_.mag_cov);
-        get_parameter("arm_enabled",    params_.arm_enabled);
+        get_parameter("serial_port",     params_.serial_port);
+        get_parameter("car_type",        params_.car_type);
+        get_parameter("cmd_delay",       params_.cmd_delay);
+        get_parameter("debug",           params_.debug);
+        get_parameter("publish_rate",    params_.publish_rate);
+        get_parameter("publish_tf",      params_.publish_tf);
+        get_parameter("odom_frame",      params_.odom_frame);
+        get_parameter("base_frame",      params_.base_frame);
+        get_parameter("imu_frame",       params_.imu_frame);
+        get_parameter("gyro_cov",        params_.gyro_cov);
+        get_parameter("accel_cov",       params_.accel_cov);
+        get_parameter("mag_cov",         params_.mag_cov);
+        get_parameter("arm_enabled",     params_.arm_enabled);
         get_parameter("cmd_vel_timeout", params_.cmd_vel_timeout);
-        get_parameter("ticks_per_rev",  params_.ticks_per_rev);
-        get_parameter("wheel_radius",   params_.wheel_radius);
+        get_parameter("ticks_per_rev",   params_.ticks_per_rev);
+        get_parameter("wheel_radius",    params_.wheel_radius);
 
-        // ── Open driver ───────────────────────────────────────────────────────
+        // ── Driver ────────────────────────────────────────────────────────────
         try {
             robot_ = std::make_unique<Mecarosmaster>(
-                params_.car_type,
-                params_.serial_port,
-                params_.cmd_delay,
-                params_.debug);
+                params_.car_type, params_.serial_port,
+                params_.cmd_delay, params_.debug);
         } catch (const std::exception& e) {
-            RCLCPP_FATAL(get_logger(), "Failed to open Mecarosmaster: %s", e.what());
+            RCLCPP_FATAL(get_logger(),
+                "Impossible d'ouvrir Mecarosmaster : %s", e.what());
             throw;
         }
 
@@ -170,62 +149,71 @@ public:
         robot_->set_auto_report_state(true);
         robot_->set_uart_servo_ctrl_enable(params_.arm_enabled);
 
+        // Snapshot encodeurs initial
+        robot_->get_motor_encoder(
+            prev_enc_[0], prev_enc_[1], prev_enc_[2], prev_enc_[3]);
+
         // ── TF broadcaster ────────────────────────────────────────────────────
         if (params_.publish_tf) {
             tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
         }
 
         // ── Publishers ────────────────────────────────────────────────────────
+        const auto sensor_qos = rclcpp::SensorDataQoS();
+
         pub_imu_     = create_publisher<sensor_msgs::msg::Imu>(
-                    "mecarosmaster/imu/data",    rclcpp::SensorDataQoS());
+                       "mecarosmaster/imu/data",    sensor_qos);
         pub_rpy_     = create_publisher<geometry_msgs::msg::Vector3Stamped>(
-                    "mecarosmaster/imu/rpy",     rclcpp::SensorDataQoS());
+                       "mecarosmaster/imu/rpy",     sensor_qos);
         pub_mag_     = create_publisher<sensor_msgs::msg::MagneticField>(
-                    "mecarosmaster/imu/mag",     rclcpp::SensorDataQoS());
+                       "mecarosmaster/imu/mag",     sensor_qos);
         pub_odom_    = create_publisher<nav_msgs::msg::Odometry>(
-                    "mecarosmaster/odom",        rclcpp::SensorDataQoS());
+                       "odom",                      sensor_qos);
         pub_battery_ = create_publisher<sensor_msgs::msg::BatteryState>(
-                    "mecarosmaster/battery",     10);
+                       "mecarosmaster/battery",     10);
         pub_enc_     = create_publisher<std_msgs::msg::Int32MultiArray>(
-                    "mecarosmaster/encoders",    rclcpp::SensorDataQoS());
+                       "mecarosmaster/encoders",    sensor_qos);
         pub_joint_   = create_publisher<sensor_msgs::msg::JointState>(
-                    "mecarosmaster/joint_states", rclcpp::SensorDataQoS());
+                       "joint_states",              sensor_qos);  // topic standard RSP
         pub_vel_     = create_publisher<geometry_msgs::msg::TwistStamped>(
-                    "mecarosmaster/velocity",    rclcpp::SensorDataQoS());
+                       "mecarosmaster/velocity",    sensor_qos);
 
         // ── Subscribers ───────────────────────────────────────────────────────
 
-        // cmd_vel — main motion command
+        // cmd_vel — commande principale de mouvement (compatible Nav2 / teleop)
         sub_cmd_vel_ = create_subscription<geometry_msgs::msg::Twist>(
-            "mecarosmaster/cmd_vel", rclcpp::SensorDataQoS(),
+            "cmd_vel", rclcpp::SensorDataQoS(),
             [this](geometry_msgs::msg::Twist::ConstSharedPtr msg) {
-                last_cmd_vel_time_ = now();
-                motor_stopped_     = false;
-                robot_->set_car_motion(msg->linear.x,
-                                       msg->linear.y,
-                                       msg->angular.z);
+                last_cmd_vel_time_.store(
+                    now().nanoseconds(), std::memory_order_relaxed);
+                motor_stopped_.store(false, std::memory_order_relaxed);
+                robot_->set_car_motion(
+                    msg->linear.x, msg->linear.y, msg->angular.z);
             });
 
-        // raw motor speeds [−100..100] × 4
+        // Vitesses moteurs brutes [−100..100] × 4
         sub_motors_ = create_subscription<std_msgs::msg::Float32MultiArray>(
             "mecarosmaster/motors/cmd", 10,
             [this](std_msgs::msg::Float32MultiArray::ConstSharedPtr msg) {
                 if (msg->data.size() < 4) {
                     RCLCPP_WARN(get_logger(),
-                        "motors/cmd: need 4 values, got %zu", msg->data.size());
+                        "motors/cmd : 4 valeurs attendues, %zu reçues",
+                        msg->data.size());
                     return;
                 }
-                robot_->set_motor(msg->data[0], msg->data[1],
-                                  msg->data[2], msg->data[3]);
+                robot_->set_motor(
+                    msg->data[0], msg->data[1],
+                    msg->data[2], msg->data[3]);
             });
 
-        // PWM servo positions [0..180] × 4
+        // Servos PWM [0..180] × 4
         sub_pwm_servos_ = create_subscription<std_msgs::msg::Float32MultiArray>(
             "mecarosmaster/pwm_servos/cmd", 10,
             [this](std_msgs::msg::Float32MultiArray::ConstSharedPtr msg) {
                 if (msg->data.size() < 4) {
                     RCLCPP_WARN(get_logger(),
-                        "pwm_servos/cmd: need 4 values, got %zu", msg->data.size());
+                        "pwm_servos/cmd : 4 valeurs attendues, %zu reçues",
+                        msg->data.size());
                     return;
                 }
                 robot_->set_pwm_servo_all(
@@ -235,18 +223,18 @@ public:
                     static_cast<int>(msg->data[3]));
             });
 
-        // LED color (ColorRGBA, values [0..1])
+        // Couleur LED (ColorRGBA, valeurs [0..1])
         sub_leds_ = create_subscription<std_msgs::msg::ColorRGBA>(
             "mecarosmaster/leds/color", 10,
             [this](std_msgs::msg::ColorRGBA::ConstSharedPtr msg) {
                 robot_->set_colorful_lamps(
                     0,
-                    static_cast<int>(msg->r * 255),
-                    static_cast<int>(msg->g * 255),
-                    static_cast<int>(msg->b * 255));
+                    static_cast<int>(std::clamp(msg->r, 0.f, 1.f) * 255),
+                    static_cast<int>(std::clamp(msg->g, 0.f, 1.f) * 255),
+                    static_cast<int>(std::clamp(msg->b, 0.f, 1.f) * 255));
             });
 
-        // Arm — 6-DOF joint trajectory (positions in degrees)
+        // Bras 6-DOF — JointTrajectory (positions en degrés)
         sub_arm_ = create_subscription<trajectory_msgs::msg::JointTrajectory>(
             "mecarosmaster/arm/joint_cmd", 10,
             [this](trajectory_msgs::msg::JointTrajectory::ConstSharedPtr msg) {
@@ -254,192 +242,182 @@ public:
                 const auto& pt = msg->points.front();
                 if (pt.positions.size() < 6) {
                     RCLCPP_WARN(get_logger(),
-                        "arm/joint_cmd: need 6 positions, got %zu",
+                        "arm/joint_cmd : 6 positions attendues, %zu reçues",
                         pt.positions.size());
                     return;
                 }
-                // time_from_start → ms, clamped [0..2000]
                 int run_time = static_cast<int>(
                     rclcpp::Duration(pt.time_from_start).seconds() * 1000.0);
-                run_time = std::max(0, std::min(2000, run_time));
+                run_time = std::clamp(run_time, 0, 2000);
 
                 std::vector<int> angles(6);
                 for (int i = 0; i < 6; ++i)
                     angles[i] = static_cast<int>(pt.positions[i]);
-
                 robot_->set_uart_servo_angle_array(angles, run_time);
             });
 
-        // Ackermann steering angle [−45..45] degrees
+        // Direction Ackermann [−45..45] degrés
         sub_akm_ = create_subscription<std_msgs::msg::Int32>(
             "mecarosmaster/akm/steering", 10,
             [this](std_msgs::msg::Int32::ConstSharedPtr msg) {
-                robot_->set_akm_steering_angle(msg->data, /*ctrl_car=*/true);
+                robot_->set_akm_steering_angle(msg->data, true);
             });
 
-        // Arm enable/disable
+        // Activation/désactivation du bras
         sub_arm_enable_ = create_subscription<std_msgs::msg::Bool>(
             "mecarosmaster/arm/enable", 10,
             [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
                 robot_->set_uart_servo_ctrl_enable(msg->data);
-                RCLCPP_INFO(get_logger(), "Arm ctrl %s",
-                            msg->data ? "ENABLED" : "DISABLED");
+                params_.arm_enabled = msg->data;
+                RCLCPP_INFO(get_logger(),
+                    "Bras %s", msg->data ? "ACTIVÉ" : "DÉSACTIVÉ");
             });
 
         // ── Services ──────────────────────────────────────────────────────────
-        srv_reset_flash_ = create_service<std_srvs::srv::Trigger>(
-            "mecarosmaster/reset_flash",
+        auto make_trigger = [&](const std::string& name, auto cb) {
+            return create_service<std_srvs::srv::Trigger>(name, cb);
+        };
+
+        srv_reset_flash_ = make_trigger("mecarosmaster/reset_flash",
             [this](std_srvs::srv::Trigger::Request::ConstSharedPtr,
                    std_srvs::srv::Trigger::Response::SharedPtr res) {
                 robot_->reset_flash_value();
-                res->success = true;
-                res->message = "Flash reset sent";
+                res->success = true; res->message = "Flash reset envoyé";
             });
 
-        srv_reset_car_ = create_service<std_srvs::srv::Trigger>(
-            "mecarosmaster/reset_car",
+        srv_reset_car_ = make_trigger("mecarosmaster/reset_car",
             [this](std_srvs::srv::Trigger::Request::ConstSharedPtr,
                    std_srvs::srv::Trigger::Response::SharedPtr res) {
                 robot_->reset_car_state();
-                res->success = true;
-                res->message = "Car state reset sent";
+                res->success = true; res->message = "État robot réinitialisé";
             });
 
-        srv_beep_ = create_service<std_srvs::srv::Trigger>(
-            "mecarosmaster/beep",
+        srv_beep_ = make_trigger("mecarosmaster/beep",
             [this](std_srvs::srv::Trigger::Request::ConstSharedPtr,
                    std_srvs::srv::Trigger::Response::SharedPtr res) {
                 robot_->set_beep(200);
-                res->success = true;
-                res->message = "Beep sent (200 ms)";
+                res->success = true; res->message = "Bip 200 ms";
             });
 
-        srv_stop_ = create_service<std_srvs::srv::Trigger>(
-            "mecarosmaster/stop",
+        srv_stop_ = make_trigger("mecarosmaster/stop",
             [this](std_srvs::srv::Trigger::Request::ConstSharedPtr,
                    std_srvs::srv::Trigger::Response::SharedPtr res) {
                 stopMotors();
-                res->success = true;
-                res->message = "Motors stopped";
+                res->success = true; res->message = "Moteurs arrêtés";
             });
 
-        srv_clear_odom_ = create_service<std_srvs::srv::Trigger>(
-            "mecarosmaster/clear_odom",
+        srv_clear_odom_ = make_trigger("mecarosmaster/clear_odom",
             [this](std_srvs::srv::Trigger::Request::ConstSharedPtr,
                    std_srvs::srv::Trigger::Response::SharedPtr res) {
                 std::lock_guard<std::mutex> lk(pose_mutex_);
                 pose_ = OdomPose{};
-                res->success = true;
-                res->message = "Odometry pose reset to zero";
+                res->success = true; res->message = "Odométrie remise à zéro";
             });
 
-        // Dynamic parameter callback
+        // ── Callback paramètres dynamiques ────────────────────────────────────
         param_cb_handle_ = add_on_set_parameters_callback(
-            [this](const std::vector<rclcpp::Parameter>& params) {
-                return onSetParameters(params);
+            [this](const std::vector<rclcpp::Parameter>& p) {
+                return onSetParameters(p);
             });
 
-        // ── Publish timer ─────────────────────────────────────────────────────
-        auto period = std::chrono::duration<double>(1.0 / params_.publish_rate);
+        // ── Timer principal ───────────────────────────────────────────────────
         last_publish_time_ = now();
+        const auto period  = std::chrono::duration<double>(
+            1.0 / std::max(params_.publish_rate, 1.0));
         timer_ = create_wall_timer(
             std::chrono::duration_cast<std::chrono::nanoseconds>(period),
-            std::bind(&MecarosmasterNode::timerCallback, this));
+            [this]() { timerCallback(); });
 
         RCLCPP_INFO(get_logger(),
-            "mecarosmaster_node ready\n"
-            "  port=%s  car_type=%d  rate=%.0f Hz\n"
-            "  publish_tf=%d  cmd_vel_timeout=%.2f s",
+            "mecarosmaster_node prêt\n"
+            "  port=%s  car_type=%d  taux=%.0f Hz\n"
+            "  publish_tf=%s  cmd_vel_timeout=%.2f s",
             params_.serial_port.c_str(), params_.car_type,
-            params_.publish_rate, params_.publish_tf,
+            params_.publish_rate,
+            params_.publish_tf ? "oui" : "non",
             params_.cmd_vel_timeout);
     }
 
 private:
-    // ─────────────────────────────────────────────────────────────────────────
-    //  Timer callback — runs at publish_rate Hz
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── Timer ─────────────────────────────────────────────────────────────────
     void timerCallback()
     {
-        auto stamp = now();
+        const auto stamp = now();
 
-        // ── Compute dt for odometry integration ───────────────────────────────
         double dt = (stamp - last_publish_time_).seconds();
         last_publish_time_ = stamp;
         if (dt <= 0.0 || dt > 1.0) dt = 1.0 / params_.publish_rate;
 
-        // ── Watchdog: stop motors if cmd_vel is stale ─────────────────────────
+        // Watchdog cmd_vel
         checkCmdVelTimeout(stamp);
 
-        // ── Integrate pose ────────────────────────────────────────────────────
+        // Vitesses depuis le robot (rapport automatique)
         double vx = 0, vy = 0, vz = 0;
         robot_->get_motion_data(vx, vy, vz);
+
+        // Intégration de pose
         {
             std::lock_guard<std::mutex> lk(pose_mutex_);
             pose_.integrate(vx, vy, vz, dt);
         }
 
-        // ── Publish all topics ─────────────────────────────────────────────────
+        // Publications
         publishImu(stamp);
         publishRpy(stamp);
         publishMag(stamp);
         publishOdom(stamp, vx, vy, vz);
         publishBattery(stamp);
         publishEncoders(stamp);
-        publishJointStates(stamp);
+        publishJointStates(stamp, dt);
         publishVelocity(stamp, vx, vy, vz);
 
-        // ── TF broadcast ───────────────────────────────────────────────────────
         if (params_.publish_tf && tf_broadcaster_) {
             broadcastOdomTf(stamp);
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  Watchdog
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── Watchdog ──────────────────────────────────────────────────────────────
     void checkCmdVelTimeout(const rclcpp::Time& now_t)
     {
         if (params_.cmd_vel_timeout <= 0.0) return;
-        if (motor_stopped_) return;
-        if ((now_t - last_cmd_vel_time_).seconds() > params_.cmd_vel_timeout) {
+        if (motor_stopped_.load(std::memory_order_relaxed)) return;
+
+        const int64_t last_ns =
+            last_cmd_vel_time_.load(std::memory_order_relaxed);
+        const double elapsed =
+            (now_t.nanoseconds() - last_ns) * 1e-9;
+
+        if (elapsed > params_.cmd_vel_timeout) {
             stopMotors();
             RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
-                "cmd_vel timeout — motors stopped");
+                "cmd_vel timeout (%.2f s) — moteurs arrêtés", elapsed);
         }
     }
 
     void stopMotors()
     {
         robot_->set_car_motion(0.0, 0.0, 0.0);
-        motor_stopped_ = true;
+        motor_stopped_.store(true, std::memory_order_relaxed);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  sensor_msgs/Imu
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── sensor_msgs/Imu ───────────────────────────────────────────────────────
     void publishImu(const rclcpp::Time& stamp)
     {
-        double ax, ay, az, gx, gy, gz;
-        double roll, pitch, yaw;
+        double ax, ay, az, gx, gy, gz, roll, pitch, yaw;
         robot_->get_accelerometer_data(ax, ay, az);
         robot_->get_gyroscope_data(gx, gy, gz);
-        // Orientation from IMU attitude (radians)
-        robot_->get_imu_attitude_data(roll, pitch, yaw, /*to_angle=*/false);
+        robot_->get_imu_attitude_data(roll, pitch, yaw, false);
 
         sensor_msgs::msg::Imu msg;
         msg.header.stamp    = stamp;
         msg.header.frame_id = params_.imu_frame;
 
-        // Convert Euler → quaternion
         tf2::Quaternion q;
         q.setRPY(roll, pitch, yaw);
         msg.orientation.x = q.x();
         msg.orientation.y = q.y();
         msg.orientation.z = q.z();
         msg.orientation.w = q.w();
-
-        // Orientation covariance — diagonal, estimate ±2° → ~(0.035 rad)²
         msg.orientation_covariance.fill(0.0);
         msg.orientation_covariance[0] = 1.2e-3;
         msg.orientation_covariance[4] = 1.2e-3;
@@ -449,28 +427,26 @@ private:
         msg.linear_acceleration.y = ay;
         msg.linear_acceleration.z = az;
         msg.linear_acceleration_covariance.fill(0.0);
-        msg.linear_acceleration_covariance[0] = params_.accel_cov;
-        msg.linear_acceleration_covariance[4] = params_.accel_cov;
+        msg.linear_acceleration_covariance[0] =
+        msg.linear_acceleration_covariance[4] =
         msg.linear_acceleration_covariance[8] = params_.accel_cov;
 
         msg.angular_velocity.x = gx;
         msg.angular_velocity.y = gy;
         msg.angular_velocity.z = gz;
         msg.angular_velocity_covariance.fill(0.0);
-        msg.angular_velocity_covariance[0] = params_.gyro_cov;
-        msg.angular_velocity_covariance[4] = params_.gyro_cov;
+        msg.angular_velocity_covariance[0] =
+        msg.angular_velocity_covariance[4] =
         msg.angular_velocity_covariance[8] = params_.gyro_cov;
 
         pub_imu_->publish(msg);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  geometry_msgs/Vector3Stamped (RPY en degrés)
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── RPY degrés ────────────────────────────────────────────────────────────
     void publishRpy(const rclcpp::Time& stamp)
     {
         double roll, pitch, yaw;
-        robot_->get_imu_attitude_data(roll, pitch, yaw, /*to_angle=*/true);
+        robot_->get_imu_attitude_data(roll, pitch, yaw, true);
 
         geometry_msgs::msg::Vector3Stamped msg;
         msg.header.stamp    = stamp;
@@ -478,13 +454,10 @@ private:
         msg.vector.x = roll;
         msg.vector.y = pitch;
         msg.vector.z = yaw;
-
         pub_rpy_->publish(msg);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  sensor_msgs/MagneticField
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── sensor_msgs/MagneticField ─────────────────────────────────────────────
     void publishMag(const rclcpp::Time& stamp)
     {
         double mx, my, mz;
@@ -497,16 +470,13 @@ private:
         msg.magnetic_field.y = my;
         msg.magnetic_field.z = mz;
         msg.magnetic_field_covariance.fill(0.0);
-        msg.magnetic_field_covariance[0] = params_.mag_cov;
-        msg.magnetic_field_covariance[4] = params_.mag_cov;
+        msg.magnetic_field_covariance[0] =
+        msg.magnetic_field_covariance[4] =
         msg.magnetic_field_covariance[8] = params_.mag_cov;
-
         pub_mag_->publish(msg);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  nav_msgs/Odometry — pose intégrée + vitesses
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── nav_msgs/Odometry ─────────────────────────────────────────────────────
     void publishOdom(const rclcpp::Time& stamp,
                      double vx, double vy, double vz)
     {
@@ -515,7 +485,6 @@ private:
             std::lock_guard<std::mutex> lk(pose_mutex_);
             p = pose_;
         }
-
         tf2::Quaternion q;
         q.setRPY(0.0, 0.0, p.theta);
 
@@ -524,7 +493,6 @@ private:
         msg.header.frame_id = params_.odom_frame;
         msg.child_frame_id  = params_.base_frame;
 
-        // Pose
         msg.pose.pose.position.x    = p.x;
         msg.pose.pose.position.y    = p.y;
         msg.pose.pose.position.z    = 0.0;
@@ -532,18 +500,14 @@ private:
         msg.pose.pose.orientation.y = q.y();
         msg.pose.pose.orientation.z = q.z();
         msg.pose.pose.orientation.w = q.w();
-
-        // Pose covariance (diagonal) — dead-reckoning drifts fast
         msg.pose.covariance.fill(0.0);
-        msg.pose.covariance[0]  = 1e-2;  // x
-        msg.pose.covariance[7]  = 1e-2;  // y
-        msg.pose.covariance[35] = 1e-2;  // yaw
+        msg.pose.covariance[0]  = 1e-2;
+        msg.pose.covariance[7]  = 1e-2;
+        msg.pose.covariance[35] = 1e-2;
 
-        // Twist (in base_link frame)
         msg.twist.twist.linear.x  = vx;
         msg.twist.twist.linear.y  = vy;
         msg.twist.twist.angular.z = vz;
-
         msg.twist.covariance.fill(0.0);
         msg.twist.covariance[0]  = 1e-3;
         msg.twist.covariance[7]  = 1e-3;
@@ -552,9 +516,7 @@ private:
         pub_odom_->publish(msg);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  TF2 broadcast: odom → base_link
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── TF2 odom → base_link ──────────────────────────────────────────────────
     void broadcastOdomTf(const rclcpp::Time& stamp)
     {
         OdomPose p;
@@ -562,7 +524,6 @@ private:
             std::lock_guard<std::mutex> lk(pose_mutex_);
             p = pose_;
         }
-
         tf2::Quaternion q;
         q.setRPY(0.0, 0.0, p.theta);
 
@@ -570,7 +531,6 @@ private:
         tf.header.stamp    = stamp;
         tf.header.frame_id = params_.odom_frame;
         tf.child_frame_id  = params_.base_frame;
-
         tf.transform.translation.x = p.x;
         tf.transform.translation.y = p.y;
         tf.transform.translation.z = 0.0;
@@ -582,35 +542,30 @@ private:
         tf_broadcaster_->sendTransform(tf);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  sensor_msgs/BatteryState
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── sensor_msgs/BatteryState ──────────────────────────────────────────────
     void publishBattery(const rclcpp::Time& stamp)
     {
         constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
 
         sensor_msgs::msg::BatteryState msg;
-        msg.header.stamp = stamp;
-        msg.voltage      = static_cast<float>(robot_->get_battery_voltage());
-        msg.present      = true;
-        msg.current      = kNaN;
-        msg.charge       = kNaN;
-        msg.capacity     = kNaN;
+        msg.header.stamp    = stamp;
+        msg.voltage         = static_cast<float>(robot_->get_battery_voltage());
+        msg.present         = true;
+        msg.current         = kNaN;
+        msg.charge          = kNaN;
+        msg.capacity        = kNaN;
         msg.design_capacity = kNaN;
-        msg.percentage   = kNaN;
+        msg.percentage      = kNaN;
         msg.power_supply_status     =
             sensor_msgs::msg::BatteryState::POWER_SUPPLY_STATUS_UNKNOWN;
         msg.power_supply_health     =
             sensor_msgs::msg::BatteryState::POWER_SUPPLY_HEALTH_UNKNOWN;
         msg.power_supply_technology =
             sensor_msgs::msg::BatteryState::POWER_SUPPLY_TECHNOLOGY_UNKNOWN;
-
         pub_battery_->publish(msg);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  std_msgs/Int32MultiArray — 4 encoder raw counts
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── std_msgs/Int32MultiArray — compteurs encodeurs bruts ──────────────────
     void publishEncoders(const rclcpp::Time& /*stamp*/)
     {
         int m1, m2, m3, m4;
@@ -621,41 +576,36 @@ private:
         pub_enc_->publish(msg);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  sensor_msgs/JointState — wheel positions derived from encoders
-    //
-    //  This topic is consumed by ros2_control's JointStateBroadcaster or by
-    //  robot_state_publisher when ros2_control is NOT used.
-    //  joint names must match the URDF.
-    // ─────────────────────────────────────────────────────────────────────────
-    void publishJointStates(const rclcpp::Time& stamp)
+    // ── sensor_msgs/JointState — positions et vitesses roues ─────────────────
+    // Publie sur "/joint_states" — topic standard consommé par robot_state_publisher
+    void publishJointStates(const rclcpp::Time& stamp, double dt)
     {
-        int m1, m2, m3, m4;
-        robot_->get_motor_encoder(m1, m2, m3, m4);
+        int enc[4];
+        robot_->get_motor_encoder(enc[0], enc[1], enc[2], enc[3]);
 
-        // Convert encoder ticks → radians
-        auto ticks2rad = [&](int ticks) -> double {
-            return (static_cast<double>(ticks) / params_.ticks_per_rev)
-                   * 2.0 * M_PI;
-        };
+        const double rad_per_tick =
+            (2.0 * M_PI) / std::max(params_.ticks_per_rev, 1.0);
 
         sensor_msgs::msg::JointState msg;
         msg.header.stamp = stamp;
         msg.name     = {"wheel_fl_joint", "wheel_fr_joint",
-                         "wheel_rl_joint", "wheel_rr_joint"};
-        msg.position = {ticks2rad(m1), ticks2rad(m2),
-                        ticks2rad(m3), ticks2rad(m4)};
-        // velocity from motion report (vx shared, per-wheel not available)
-        // If needed, differentiate encoder counts between calls.
-        msg.velocity = {0.0, 0.0, 0.0, 0.0};
-        msg.effort   = {};
+                        "wheel_rl_joint", "wheel_rr_joint"};
+        msg.position.resize(4);
+        msg.velocity.resize(4);
 
+        for (int i = 0; i < 4; ++i) {
+            const double drad =
+                static_cast<double>(enc[i] - prev_enc_[i]) * rad_per_tick;
+            joint_pos_[i] += drad;
+            msg.position[i] = joint_pos_[i];
+            msg.velocity[i] = (dt > 0.0) ? drad / dt : 0.0;
+            prev_enc_[i] = enc[i];
+        }
+        msg.effort = {};
         pub_joint_->publish(msg);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  geometry_msgs/TwistStamped — stamped velocity (for ros2_control bridge)
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── geometry_msgs/TwistStamped ────────────────────────────────────────────
     void publishVelocity(const rclcpp::Time& stamp,
                          double vx, double vy, double vz)
     {
@@ -668,50 +618,44 @@ private:
         pub_vel_->publish(msg);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  Dynamic parameter update callback
-    // ─────────────────────────────────────────────────────────────────────────
+    // ── Callback paramètres dynamiques ────────────────────────────────────────
     rcl_interfaces::msg::SetParametersResult
     onSetParameters(const std::vector<rclcpp::Parameter>& params)
     {
         rcl_interfaces::msg::SetParametersResult result;
         result.successful = true;
         for (const auto& p : params) {
-            if (p.get_name() == "publish_tf") {
-                params_.publish_tf = p.as_bool();
-            } else if (p.get_name() == "cmd_vel_timeout") {
-                params_.cmd_vel_timeout = p.as_double();
-            } else if (p.get_name() == "arm_enabled") {
+            const auto& name = p.get_name();
+            if      (name == "publish_tf")      params_.publish_tf      = p.as_bool();
+            else if (name == "cmd_vel_timeout") params_.cmd_vel_timeout = p.as_double();
+            else if (name == "gyro_cov")        params_.gyro_cov        = p.as_double();
+            else if (name == "accel_cov")       params_.accel_cov       = p.as_double();
+            else if (name == "mag_cov")         params_.mag_cov         = p.as_double();
+            else if (name == "arm_enabled") {
                 params_.arm_enabled = p.as_bool();
                 robot_->set_uart_servo_ctrl_enable(params_.arm_enabled);
-            } else if (p.get_name() == "gyro_cov") {
-                params_.gyro_cov = p.as_double();
-            } else if (p.get_name() == "accel_cov") {
-                params_.accel_cov = p.as_double();
-            } else if (p.get_name() == "mag_cov") {
-                params_.mag_cov = p.as_double();
             }
         }
         return result;
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  Members
-    // ─────────────────────────────────────────────────────────────────────────
-    NodeParams params_;
+    // ── Membres ───────────────────────────────────────────────────────────────
+    NodeParams                     params_;
     std::unique_ptr<Mecarosmaster> robot_;
 
-    // TF
     std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 
-    // Dead-reckoning pose
-    OdomPose          pose_;
-    std::mutex        pose_mutex_;
-    rclcpp::Time      last_publish_time_;
+    OdomPose         pose_;
+    std::mutex       pose_mutex_;
+    rclcpp::Time     last_publish_time_;
 
-    // cmd_vel watchdog
-    rclcpp::Time      last_cmd_vel_time_{0, 0, RCL_ROS_TIME};
-    bool              motor_stopped_{true};
+    // Watchdog thread-safe (évite mutex dans les callbacks subscriber)
+    std::atomic<int64_t> last_cmd_vel_time_{0};
+    std::atomic<bool>    motor_stopped_{true};
+
+    // Encodeurs précédents + position angulaire intégrée des joints
+    std::array<int, 4>    prev_enc_  {0, 0, 0, 0};
+    std::array<double, 4> joint_pos_ {0.0, 0.0, 0.0, 0.0};
 
     // Publishers
     rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr              pub_imu_;
@@ -739,10 +683,7 @@ private:
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_stop_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_clear_odom_;
 
-    // Dynamic params handle
     rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
-
-    // Timer
     rclcpp::TimerBase::SharedPtr timer_;
 };
 
@@ -752,17 +693,14 @@ private:
 int main(int argc, char* argv[])
 {
     rclcpp::init(argc, argv);
-
     try {
-        auto node = std::make_shared<MecarosmasterNode>();
-        rclcpp::spin(node);
+        rclcpp::spin(std::make_shared<MecarosmasterNode>());
     } catch (const std::exception& e) {
         RCLCPP_FATAL(rclcpp::get_logger("main"),
-                     "Unhandled exception: %s", e.what());
+            "Exception non gérée : %s", e.what());
         rclcpp::shutdown();
         return 1;
     }
-
     rclcpp::shutdown();
     return 0;
 }

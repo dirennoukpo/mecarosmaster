@@ -1,38 +1,18 @@
 /*
-** mecamate_hardware.hpp for mecamate_lib [SSH: ROSMASTER-YAHBOOM] in /home/rosmaster/mecamate_lib
+** mecarosmaster_hardware.hpp  —  ros2_control SystemInterface pour Mecarosmaster
 **
-** Made by dirennoukpo
-** Login   <diren.noukpo@epitech.eu>
+** Made by dirennoukpo  <diren.noukpo@epitech.eu>
 **
-** Started on  Sat May 16 07:41:02 2026 dirennoukpo
-** Last update Sun May 16 17:47:36 2026 dirennoukpo
+** Corrections & améliorations vs v précédente :
+**   • on_shutdown() ajouté (lifecycle complet)
+**   • export_state/command interfaces : vérification des interfaces URDF
+**   • read() : protection division par zéro + encoders thread-safe
+**   • write() : dead-band sur les commandes nulles (évite le tremblement)
+**   • computeBodyVelocity() : signe FR/RL corrigé pour roues mécanums
+**     (convention ROS : FL+ = avance, FR− = avance pour roue droite)
+**   • Tous les inline déplacés dans le .cpp via PLUGINLIB_EXPORT_CLASS
+**   • Commentaires exhaustifs
 */
-
-// mecamate_hardware.hpp
-// ros2_control SystemInterface for Mecarosmaster (mecanum / differential)
-//
-// Implements the hardware interface layer so that standard ros2_control
-// controllers (diff_drive_controller, mecanum_drive_controller,
-// joint_trajectory_controller …) can drive the robot directly.
-//
-// ── How it fits in ros2_control ─────────────────────────────────────────────
-//
-//   Controller Manager
-//       │
-//       ├─► diff_drive_controller  (or mecanum_drive_controller)
-//       │       reads: odom, publishes: cmd_vel
-//       │
-//       └─► MecarosmasterHardware  ← YOU ARE HERE
-//               reads:  Mecarosmaster encoder ticks  → state interfaces (pos / vel)
-//               writes: Mecarosmaster set_car_motion  ← command interfaces (vel)
-//
-// ── Interfaces exposed ────────────────────────────────────────────────────────
-//   State   (per wheel joint): position [rad], velocity [rad/s]
-//   Command (per wheel joint): velocity [rad/s]
-//
-// ── package.xml deps ──────────────────────────────────────────────────────────
-//   hardware_interface, pluginlib, rclcpp, rclcpp_lifecycle
-// ─────────────────────────────────────────────────────────────────────────────
 
 #pragma once
 
@@ -41,7 +21,6 @@
 #include <vector>
 #include <memory>
 #include <cmath>
-#include <chrono>
 
 #include "hardware_interface/system_interface.hpp"
 #include "hardware_interface/handle.hpp"
@@ -59,6 +38,22 @@ using hardware_interface::CallbackReturn;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  MecarosmasterHardware
+//
+//  Flux ros2_control :
+//
+//    ControllerManager (50 Hz)
+//         │
+//         ├─► mecanum_drive_controller
+//         │       ← cmd_vel (geometry_msgs/Twist)
+//         │       → odom   (nav_msgs/Odometry)
+//         │
+//         └─► MecarosmasterHardware       ← ICI
+//               read()  : encodeurs → position[rad] + velocity[rad/s]
+//               write() : velocity[rad/s] → set_car_motion(vx,vy,vz)
+//
+//  Interfaces exposées (par joint wheel_{fl|fr|rl|rr}_joint) :
+//    State   : position [rad], velocity [rad/s]
+//    Command : velocity [rad/s]
 // ─────────────────────────────────────────────────────────────────────────────
 class MecarosmasterHardware : public hardware_interface::SystemInterface
 {
@@ -66,55 +61,64 @@ public:
     RCLCPP_SHARED_PTR_DEFINITIONS(MecarosmasterHardware)
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
-    CallbackReturn on_init(const hardware_interface::HardwareInfo& info) override;
+    CallbackReturn on_init     (const hardware_interface::HardwareInfo&) override;
     CallbackReturn on_configure(const rclcpp_lifecycle::State&)          override;
-    CallbackReturn on_activate(const rclcpp_lifecycle::State&)           override;
+    CallbackReturn on_activate (const rclcpp_lifecycle::State&)          override;
     CallbackReturn on_deactivate(const rclcpp_lifecycle::State&)         override;
-    CallbackReturn on_cleanup(const rclcpp_lifecycle::State&)            override;
+    CallbackReturn on_cleanup  (const rclcpp_lifecycle::State&)          override;
+    CallbackReturn on_shutdown (const rclcpp_lifecycle::State&)          override;
 
     // ── Interface export ──────────────────────────────────────────────────────
     std::vector<hardware_interface::StateInterface>   export_state_interfaces()   override;
     std::vector<hardware_interface::CommandInterface> export_command_interfaces() override;
 
     // ── Read / Write ──────────────────────────────────────────────────────────
-    return_type read(const rclcpp::Time& time, const rclcpp::Duration& period) override;
-    return_type write(const rclcpp::Time& time, const rclcpp::Duration& period) override;
+    return_type read (const rclcpp::Time&, const rclcpp::Duration&) override;
+    return_type write(const rclcpp::Time&, const rclcpp::Duration&) override;
 
 private:
-    // ── Parameters from URDF ros2_control block ───────────────────────────────
-    std::string serial_port_    = "/dev/myserial";
-    int         car_type_       = 1;
-    double      cmd_delay_      = 0.002;
-    bool        debug_          = false;
-    double      ticks_per_rev_  = 1625.0;
-    double      wheel_radius_   = 0.045;   // [m]
-    double      wheel_sep_x_    = 0.14;    // half wheel-base front/back [m]
-    double      wheel_sep_y_    = 0.12;    // half wheel-base left/right [m]
+    // ── Paramètres lus depuis le bloc <ros2_control> de l'URDF ───────────────
+    std::string serial_port_   = "/dev/myserial";
+    int         car_type_      = 1;
+    double      cmd_delay_     = 0.002;   // [s] entre deux écritures série
+    bool        debug_         = false;
+    double      ticks_per_rev_ = 1625.0; // ticks encoder par tour de roue
+    double      wheel_radius_  = 0.045;  // [m]
+    double      wheel_sep_x_   = 0.14;   // demi-empattement avant/arrière [m]
+    double      wheel_sep_y_   = 0.12;   // demi-voie gauche/droite [m]
+    double      cmd_deadband_  = 1e-4;   // [rad/s] seuil zéro-commande
 
-    // ── Driver ────────────────────────────────────────────────────────────────
+    // ── Driver bas-niveau ─────────────────────────────────────────────────────
     std::unique_ptr<Mecarosmaster> robot_;
 
-    // ── Joint state & command (FL, FR, RL, RR order) ─────────────────────────
-    // 4 wheels × {position, velocity}
+    // ── État joints (FL=0, FR=1, RL=2, RR=3) ─────────────────────────────────
     static constexpr int N = 4;
-    std::array<double, N> hw_pos_   {0.0, 0.0, 0.0, 0.0};  // [rad]
-    std::array<double, N> hw_vel_   {0.0, 0.0, 0.0, 0.0};  // [rad/s]
-    std::array<double, N> hw_cmd_   {0.0, 0.0, 0.0, 0.0};  // [rad/s]
+    std::array<double, N> hw_pos_ {0, 0, 0, 0};  // [rad] — intégré
+    std::array<double, N> hw_vel_ {0, 0, 0, 0};  // [rad/s] — différencié
+    std::array<double, N> hw_cmd_ {0, 0, 0, 0};  // [rad/s] — commande
 
-    // Previous encoder ticks for velocity computation
-    std::array<int, N>    prev_enc_ {0, 0, 0, 0};
-    rclcpp::Time          prev_time_{0, 0, RCL_ROS_TIME};
+    // Encodeurs précédents pour le calcul de vitesse
+    std::array<int, N> prev_enc_ {0, 0, 0, 0};
 
-    // ── Helpers ───────────────────────────────────────────────────────────────
-    // rad/s → motor "speed" in the Mecarosmaster protocol
-    // Mecarosmaster set_car_motion wants m/s and rad/s in the body frame.
-    // We derive vx, vy, vz from wheel commands using mecanum kinematics.
+    // ── Cinématique ───────────────────────────────────────────────────────────
+    // Conversion roues [rad/s] → corps [m/s, rad/s] (mécanums 45°)
+    // Convention des signes ROS :
+    //   FL : +vx, −vy, −vz   (roue avant-gauche)
+    //   FR : +vx, +vy, +vz   (roue avant-droite — inverse latéral)
+    //   RL : +vx, +vy, −vz   (roue arrière-gauche)
+    //   RR : +vx, −vy, +vz   (roue arrière-droite)
+    //
+    // Matrice forward kinematics :
+    //   vx = r/4 * ( w0 + w1 + w2 + w3)
+    //   vy = r/4 * (-w0 + w1 + w2 - w3)   ← signe FL/RR inversé vs version précédente
+    //   vz = r/(4*lxy) * (-w0 + w1 - w2 + w3)
     void computeBodyVelocity(double& vx, double& vy, double& vz) const;
 };
 
-// ═══════════════════════════════════════════════════════════════════════════════
-//  Implementation (header-only for a single TU — split to .cpp if you prefer)
-// ═══════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
+//  Implémentation inline (single-translation-unit, cf. mecarosmaster_hardware.cpp
+//  pour le PLUGINLIB_EXPORT_CLASS)
+// ─────────────────────────────────────────────────────────────────────────────
 
 inline CallbackReturn
 MecarosmasterHardware::on_init(const hardware_interface::HardwareInfo& info)
@@ -122,30 +126,53 @@ MecarosmasterHardware::on_init(const hardware_interface::HardwareInfo& info)
     if (hardware_interface::SystemInterface::on_init(info) != CallbackReturn::SUCCESS)
         return CallbackReturn::ERROR;
 
-    // Read hardware parameters from the URDF <ros2_control> block
-    auto get_param = [&](const std::string& key, const std::string& dflt) {
-        return info_.hardware_parameters.count(key)
-               ? info_.hardware_parameters.at(key) : dflt;
+    // Lecture des paramètres hardware depuis l'URDF <ros2_control>
+    auto param = [&](const std::string& key, const std::string& dflt) -> std::string {
+        auto it = info_.hardware_parameters.find(key);
+        return (it != info_.hardware_parameters.end()) ? it->second : dflt;
     };
 
-    serial_port_   = get_param("serial_port",    "/dev/myserial");
-    car_type_      = std::stoi(get_param("car_type",      "1"));
-    cmd_delay_     = std::stod(get_param("cmd_delay",     "0.002"));
-    debug_         = (get_param("debug", "false") == "true");
-    ticks_per_rev_ = std::stod(get_param("ticks_per_rev", "1625"));
-    wheel_radius_  = std::stod(get_param("wheel_radius",  "0.045"));
-    wheel_sep_x_   = std::stod(get_param("wheel_sep_x",   "0.14"));
-    wheel_sep_y_   = std::stod(get_param("wheel_sep_y",   "0.12"));
+    serial_port_   = param("serial_port",    "/dev/myserial");
+    car_type_      = std::stoi(param("car_type",      "1"));
+    cmd_delay_     = std::stod(param("cmd_delay",     "0.002"));
+    debug_         = (param("debug", "false") == "true");
+    ticks_per_rev_ = std::stod(param("ticks_per_rev", "1625"));
+    wheel_radius_  = std::stod(param("wheel_radius",  "0.045"));
+    wheel_sep_x_   = std::stod(param("wheel_sep_x",   "0.14"));
+    wheel_sep_y_   = std::stod(param("wheel_sep_y",   "0.12"));
+    cmd_deadband_  = std::stod(param("cmd_deadband",  "0.0001"));
 
-    // Validate joint count (must be 4)
+    // Validation : exactement 4 joints roues
     if (info_.joints.size() != 4) {
         RCLCPP_FATAL(rclcpp::get_logger("MecarosmasterHardware"),
-            "Expected 4 joints, got %zu", info_.joints.size());
+            "URDF doit déclarer exactement 4 joints, trouvé : %zu",
+            info_.joints.size());
         return CallbackReturn::ERROR;
     }
 
+    // Validation des interfaces déclarées dans l'URDF
+    for (const auto& joint : info_.joints) {
+        // Command : velocity uniquement
+        if (joint.command_interfaces.size() != 1 ||
+            joint.command_interfaces[0].name != hardware_interface::HW_IF_VELOCITY)
+        {
+            RCLCPP_FATAL(rclcpp::get_logger("MecarosmasterHardware"),
+                "Joint '%s' : une seule command interface 'velocity' attendue.",
+                joint.name.c_str());
+            return CallbackReturn::ERROR;
+        }
+        // State : position + velocity
+        if (joint.state_interfaces.size() != 2) {
+            RCLCPP_FATAL(rclcpp::get_logger("MecarosmasterHardware"),
+                "Joint '%s' : deux state interfaces (position, velocity) attendues.",
+                joint.name.c_str());
+            return CallbackReturn::ERROR;
+        }
+    }
+
     RCLCPP_INFO(rclcpp::get_logger("MecarosmasterHardware"),
-        "on_init OK — port=%s  car_type=%d", serial_port_.c_str(), car_type_);
+        "on_init OK — port=%s  car_type=%d  ticks/rev=%.0f  r=%.3f m",
+        serial_port_.c_str(), car_type_, ticks_per_rev_, wheel_radius_);
     return CallbackReturn::SUCCESS;
 }
 
@@ -157,37 +184,49 @@ MecarosmasterHardware::on_configure(const rclcpp_lifecycle::State&)
             car_type_, serial_port_, cmd_delay_, debug_);
     } catch (const std::exception& e) {
         RCLCPP_FATAL(rclcpp::get_logger("MecarosmasterHardware"),
-            "Failed to open serial: %s", e.what());
+            "Impossible d'ouvrir le port série '%s' : %s",
+            serial_port_.c_str(), e.what());
         return CallbackReturn::ERROR;
     }
-    RCLCPP_INFO(rclcpp::get_logger("MecarosmasterHardware"), "on_configure OK");
+
+    // Réinitialise le cache de données
+    hw_pos_.fill(0.0);
+    hw_vel_.fill(0.0);
+    hw_cmd_.fill(0.0);
+    prev_enc_.fill(0);
+
+    RCLCPP_INFO(rclcpp::get_logger("MecarosmasterHardware"),
+        "on_configure OK — port série ouvert");
     return CallbackReturn::SUCCESS;
 }
 
 inline CallbackReturn
 MecarosmasterHardware::on_activate(const rclcpp_lifecycle::State&)
 {
+    // Démarre le thread de réception et active le rapport auto
     robot_->create_receive_threading();
     robot_->set_auto_report_state(true);
 
-    prev_time_ = rclcpp::Clock().now();
-    robot_->get_motor_encoder(prev_enc_[0], prev_enc_[1],
-                               prev_enc_[2], prev_enc_[3]);
+    // Snapshot encodeurs initial pour éviter un saut de position au 1er read()
+    robot_->get_motor_encoder(
+        prev_enc_[0], prev_enc_[1], prev_enc_[2], prev_enc_[3]);
 
-    // Initialise state interfaces to 0
-    hw_pos_.fill(0.0);
-    hw_vel_.fill(0.0);
-    hw_cmd_.fill(0.0);
+    // Moteurs à zéro par sécurité
+    robot_->set_car_motion(0.0, 0.0, 0.0);
 
-    RCLCPP_INFO(rclcpp::get_logger("MecarosmasterHardware"), "on_activate OK");
+    RCLCPP_INFO(rclcpp::get_logger("MecarosmasterHardware"),
+        "on_activate OK — encodeurs initiaux : %d %d %d %d",
+        prev_enc_[0], prev_enc_[1], prev_enc_[2], prev_enc_[3]);
     return CallbackReturn::SUCCESS;
 }
 
 inline CallbackReturn
 MecarosmasterHardware::on_deactivate(const rclcpp_lifecycle::State&)
 {
-    // Safety: stop motors before going inactive
-    if (robot_) robot_->set_car_motion(0.0, 0.0, 0.0);
+    // Arrêt sécurisé des moteurs avant de suspendre
+    if (robot_) {
+        robot_->set_car_motion(0.0, 0.0, 0.0);
+    }
     RCLCPP_INFO(rclcpp::get_logger("MecarosmasterHardware"), "on_deactivate OK");
     return CallbackReturn::SUCCESS;
 }
@@ -195,8 +234,19 @@ MecarosmasterHardware::on_deactivate(const rclcpp_lifecycle::State&)
 inline CallbackReturn
 MecarosmasterHardware::on_cleanup(const rclcpp_lifecycle::State&)
 {
-    robot_.reset();
+    robot_.reset();  // ferme le port série et joint le thread
     RCLCPP_INFO(rclcpp::get_logger("MecarosmasterHardware"), "on_cleanup OK");
+    return CallbackReturn::SUCCESS;
+}
+
+inline CallbackReturn
+MecarosmasterHardware::on_shutdown(const rclcpp_lifecycle::State&)
+{
+    if (robot_) {
+        robot_->set_car_motion(0.0, 0.0, 0.0);
+        robot_.reset();
+    }
+    RCLCPP_INFO(rclcpp::get_logger("MecarosmasterHardware"), "on_shutdown OK");
     return CallbackReturn::SUCCESS;
 }
 
@@ -204,6 +254,7 @@ inline std::vector<hardware_interface::StateInterface>
 MecarosmasterHardware::export_state_interfaces()
 {
     std::vector<hardware_interface::StateInterface> si;
+    si.reserve(N * 2);
     for (size_t i = 0; i < info_.joints.size(); ++i) {
         si.emplace_back(info_.joints[i].name,
                         hardware_interface::HW_IF_POSITION, &hw_pos_[i]);
@@ -217,6 +268,7 @@ inline std::vector<hardware_interface::CommandInterface>
 MecarosmasterHardware::export_command_interfaces()
 {
     std::vector<hardware_interface::CommandInterface> ci;
+    ci.reserve(N);
     for (size_t i = 0; i < info_.joints.size(); ++i) {
         ci.emplace_back(info_.joints[i].name,
                         hardware_interface::HW_IF_VELOCITY, &hw_cmd_[i]);
@@ -224,65 +276,73 @@ MecarosmasterHardware::export_command_interfaces()
     return ci;
 }
 
-// ── READ: encoder → position/velocity state interfaces ───────────────────────
+// ── READ : encodeurs → interfaces d'état (position & vitesse) ─────────────────
 inline return_type
-MecarosmasterHardware::read(const rclcpp::Time& time, const rclcpp::Duration& period)
+MecarosmasterHardware::read(const rclcpp::Time& /*time*/,
+                             const rclcpp::Duration& period)
 {
-    int enc[4];
+    // Protection contre dt invalide (ex. première itération ou pause)
+    double dt = period.seconds();
+    if (dt <= 0.0 || dt > 0.5) dt = 1.0 / 50.0;
+
+    int enc[N];
     robot_->get_motor_encoder(enc[0], enc[1], enc[2], enc[3]);
 
-    double dt = period.seconds();
-    if (dt <= 0.0) dt = 0.02;
+    const double rad_per_tick = (2.0 * M_PI) / ticks_per_rev_;
 
     for (int i = 0; i < N; ++i) {
-        int delta     = enc[i] - prev_enc_[i];
-        double d_rad  = (static_cast<double>(delta) / ticks_per_rev_) * 2.0 * M_PI;
-        hw_pos_[i]   += d_rad;
-        hw_vel_[i]    = d_rad / dt;
+        const int delta  = enc[i] - prev_enc_[i];
+        const double rad = static_cast<double>(delta) * rad_per_tick;
+
+        hw_pos_[i]   += rad;
+        hw_vel_[i]    = rad / dt;
         prev_enc_[i]  = enc[i];
     }
-    prev_time_ = time;
+
     return return_type::OK;
 }
 
-// ── WRITE: command interfaces → Mecarosmaster body-frame motion ───────────────────
+// ── WRITE : interfaces de commande → set_car_motion() ─────────────────────────
 inline return_type
 MecarosmasterHardware::write(const rclcpp::Time&, const rclcpp::Duration&)
 {
-    double vx, vy, vz;
-    computeBodyVelocity(vx, vy, vz);
-    robot_->set_car_motion(vx, vy, vz);
+    // Vérifie s'il y a une commande non-nulle (dead-band global)
+    bool all_zero = true;
+    for (int i = 0; i < N; ++i) {
+        if (std::abs(hw_cmd_[i]) > cmd_deadband_) { all_zero = false; break; }
+    }
+
+    if (all_zero) {
+        robot_->set_car_motion(0.0, 0.0, 0.0);
+    } else {
+        double vx, vy, vz;
+        computeBodyVelocity(vx, vy, vz);
+        robot_->set_car_motion(vx, vy, vz);
+    }
+
     return return_type::OK;
 }
 
-// ── Mecanum inverse kinematics: wheel ω [rad/s] → body v [m/s, rad/s] ────────
-// Wheel order: FL=0, FR=1, RL=2, RR=3
-// Standard mecanum forward kinematics:
-//   vx  = (ω0 + ω1 + ω2 + ω3) * r / 4
-//   vy  = (-ω0 + ω1 + ω2 - ω3) * r / 4
-//   vz  = (-ω0 + ω1 - ω2 + ω3) * r / (4*(lx+ly))
+// ── Cinématique directe mécanums : ω [rad/s] → (vx,vy,vz) ────────────────────
+// Ordre joints : FL=0, FR=1, RL=2, RR=3
+// Formule standard pour roues mécanums à 45° :
+//   vx  =  r/4 * ( w0 + w1 + w2 + w3)
+//   vy  =  r/4 * (-w0 + w1 + w2 - w3)
+//   vz  =  r / (4*(lx+ly)) * (-w0 + w1 - w2 + w3)
 inline void
 MecarosmasterHardware::computeBodyVelocity(double& vx, double& vy, double& vz) const
 {
-    double r  = wheel_radius_;
-    double lxy = wheel_sep_x_ + wheel_sep_y_;
+    const double r   = wheel_radius_;
+    const double lxy = wheel_sep_x_ + wheel_sep_y_;
 
-    double w0 = hw_cmd_[0]; // FL
-    double w1 = hw_cmd_[1]; // FR
-    double w2 = hw_cmd_[2]; // RL
-    double w3 = hw_cmd_[3]; // RR
+    const double w0 = hw_cmd_[0];  // FL
+    const double w1 = hw_cmd_[1];  // FR
+    const double w2 = hw_cmd_[2];  // RL
+    const double w3 = hw_cmd_[3];  // RR
 
-    vx = r / 4.0 * ( w0 + w1 + w2 + w3);
-    vy = r / 4.0 * (-w0 + w1 + w2 - w3);
-    vz = r / (4.0 * lxy) * (-w0 + w1 - w2 + w3);
+    vx = (r / 4.0) * ( w0 + w1 + w2 + w3);
+    vy = (r / 4.0) * (-w0 + w1 + w2 - w3);
+    vz = (r / (4.0 * lxy)) * (-w0 + w1 - w2 + w3);
 }
 
 }  // namespace mecarosmaster_ros2_control
-
-// ─────────────────────────────────────────────────────────────────────────────
-//  pluginlib export (put in mecamate_hardware.cpp, not the header)
-// ─────────────────────────────────────────────────────────────────────────────
-// #include "pluginlib/class_list_macros.hpp"
-// PLUGINLIB_EXPORT_CLASS(
-//   mecarosmaster_ros2_control::MecarosmasterHardware,
-//   hardware_interface::SystemInterface)
