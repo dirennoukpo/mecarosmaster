@@ -5,12 +5,12 @@
 ## Login   <diren.noukpo@epitech.eu>
 ##
 ## Started on  Sat May 16 07:53:38 2026 dirennoukpo
-## Last update Sun May 16 15:36:25 2026 dirennoukpo
+## Last update Sun May 16 15:57:10 2026 dirennoukpo
 ##
 
 # docker.mk - Makefile pour gérer ton environnement Docker/ROS2
 
-DOCKER_COMPOSE = docker-compose -f ../compose/docker-compose.yml
+DOCKER_COMPOSE = docker compose --env-file env/.env -f compose/docker-compose.yml
 SERVICE = mecarosmaster
 
 # Construire l'image

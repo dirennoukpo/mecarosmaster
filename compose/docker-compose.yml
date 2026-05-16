@@ -1,19 +1,19 @@
-version: "3.9"
-
 services:
   mecarosmaster:
     build:
-      context: ./service/mecarosmaster
-      dockerfile: Dockerfile
+      context: ../           # ← racine du projet
+      dockerfile: service/mecarosmaster/Dockerfile
+      args:
+        ROS_DISTRO: ${ROS_DISTRO}
     env_file:
       - ../env/.env
     volumes:
-      # Monte ton workspace hôte dans le container
       - ../mecarosmaster_ws:/mecarosmaster_ws
     devices:
-      # Ports série dynamiques depuis ton .env
       - "${SERIAL_PORT}:${SERIAL_PORT}"
-      # Caméra si besoin
-      # - "${CAMERA_PORT}:${CAMERA_PORT}"
+    network_mode: host
+    group_add:
+      - dialout
+    restart: unless-stopped
     tty: true
     stdin_open: true

@@ -1,3 +1,6 @@
+mecarosmaster/mecarosmaster_ws/build
+mecarosmaster_ws/install
+mecarosmaster_ws/log
 # Prerequisites
 *.d
 

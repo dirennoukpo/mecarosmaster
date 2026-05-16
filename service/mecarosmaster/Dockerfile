@@ -1,29 +1,19 @@
-ARG ROS_DISTRO
+ARG ROS_DISTRO=humble
 FROM ros:${ROS_DISTRO}-ros-base AS base
 
 ARG DEBIAN_FRONTEND=noninteractive
+ARG ROS_DISTRO=humble
 
 ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig
 
-# Dépendances système et ROS essentielles
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    cmake \
-    git \
-    pkg-config \
-    python3-dev \
-    python3-pip \
+    build-essential cmake git pkg-config \
+    python3-dev python3-pip \
     python3-colcon-common-extensions \
-    python3-rosdep \
-    python3-vcstool \
-    wget \
-    curl \
-    ca-certificates \
-    usbutils \
-    udev \
-    libusb-1.0-0-dev \
-    libjpeg-dev \
-    nlohmann-json3-dev \
+    python3-rosdep python3-vcstool \
+    wget curl ca-certificates \
+    usbutils udev libusb-1.0-0-dev \
+    libjpeg-dev nlohmann-json3-dev \
     ros-${ROS_DISTRO}-rclcpp \
     ros-${ROS_DISTRO}-rclcpp-components \
     ros-${ROS_DISTRO}-sensor-msgs \
@@ -39,27 +29,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-${ROS_DISTRO}-ros2-controllers \
     && rm -rf /var/lib/apt/lists/*
 
-# Initialiser rosdep
-RUN rosdep update
+RUN rosdep init 2>/dev/null || true && rosdep update
 
-# Copier ton workspace dans l'image pour compilation
-COPY mecarosmaster_ws /mecarosmaster_ws
+# ✅ Chemin depuis la racine du projet (context: ../)
+COPY mecarosmaster_ws/src /mecarosmaster_ws/src
 WORKDIR /mecarosmaster_ws
 
-# Installer dépendances déclarées dans package.xml
-RUN rosdep install --from-paths src --ignore-src -r -y
-
-# Compiler le workspace
 RUN bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
-    colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release && \
-    rm -rf build log /root/.ros"
+    rosdep install --from-paths src --ignore-src -r -y"
 
-# Sourcing automatique pour bash
+RUN bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
+    colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release"
+
+RUN rm -rf build log /tmp/* /root/.ros
+
 RUN printf '%s\n' \
     "source /opt/ros/${ROS_DISTRO}/setup.bash" \
-    "source /mecarosmaster_ws/install/setup.bash" \
+    "[ -f /mecarosmaster_ws/install/setup.bash ] && source /mecarosmaster_ws/install/setup.bash" \
     >> /root/.bashrc
 
+# ✅ Chemin depuis la racine du projet
 COPY docker/entrypoints/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
