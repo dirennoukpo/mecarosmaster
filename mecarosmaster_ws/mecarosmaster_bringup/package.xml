@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>mecarosmaster_bringup</name>
+  <version>1.0.0</version>
+  <description>Bringup, SLAM, and Nav2 launch for Mecarosmaster</description>
+  <maintainer email="diren.noukpo@epitech.eu">dirennoukpo</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>mecarosmaster_control</depend>
+  <depend>slam_toolbox</depend>
+  <depend>nav2_bringup</depend>
+  <depend>rviz2</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

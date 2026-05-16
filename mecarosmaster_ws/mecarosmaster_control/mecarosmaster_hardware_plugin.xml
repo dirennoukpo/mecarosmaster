@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<library path="mecarosmaster_hardware">
+  <class
+    name="mecarosmaster_ros2_control/MecarosmasterHardware"
+    type="mecarosmaster_ros2_control::MecarosmasterHardware"
+    base_class_type="hardware_interface::SystemInterface">
+    <description>
+      ros2_control SystemInterface for Yahboom Mecamate mecanum platform.
+      Reads encoder ticks via serial, writes body-frame velocity commands.
+    </description>
+  </class>
+</library>

@@ -5,7 +5,7 @@
 ** Login   <diren.noukpo@epitech.eu>
 **
 ** Started on  Sat May 16 07:41:02 2026 dirennoukpo
-** Last update Sun May 16 17:06:02 2026 dirennoukpo
+** Last update Sun May 16 17:28:43 2026 dirennoukpo
 */
 
 // mecamate_hardware.hpp
@@ -50,9 +50,9 @@
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_lifecycle/state.hpp"
 
-#include "Mecaromaster.hpp"
+#include "mecarosmaster_control/Mecarosmaster.hpp"
 
-namespace mecamate_ros2_control {
+namespace mecarosmaster_ros2_control {
 
 using hardware_interface::return_type;
 using hardware_interface::CallbackReturn;
@@ -277,12 +277,12 @@ MecarosmasterHardware::computeBodyVelocity(double& vx, double& vy, double& vz) c
     vz = r / (4.0 * lxy) * (-w0 + w1 - w2 + w3);
 }
 
-}  // namespace mecamate_ros2_control
+}  // namespace mecarosmaster_ros2_control
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  pluginlib export (put in mecamate_hardware.cpp, not the header)
 // ─────────────────────────────────────────────────────────────────────────────
 // #include "pluginlib/class_list_macros.hpp"
 // PLUGINLIB_EXPORT_CLASS(
-//   mecamate_ros2_control::MecarosmasterHardware,
+//   mecarosmaster_ros2_control::MecarosmasterHardware,
 //   hardware_interface::SystemInterface)

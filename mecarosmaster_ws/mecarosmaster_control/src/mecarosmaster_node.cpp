@@ -57,7 +57,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 //  Driver
 // ─────────────────────────────────────────────────────────────────────────────
-#include "Mecarosmaster.hpp"
+#include "mecarosmaster_control/Mecarosmaster.hpp"
 
 #include <cmath>
 #include <limits>
@@ -117,7 +117,7 @@ struct OdomPose {
 class MecarosmasterNode : public rclcpp::Node {
 public:
     explicit MecarosmasterNode(const rclcpp::NodeOptions& options = rclcpp::NodeOptions())
-        : Node("mecamate_node", options)
+        : Node("mecarosmaster_node", options)
     {
         // ── Declare & read parameters ─────────────────────────────────────────
         declare_parameter("serial_port",    params_.serial_port);
@@ -177,27 +177,27 @@ public:
 
         // ── Publishers ────────────────────────────────────────────────────────
         pub_imu_     = create_publisher<sensor_msgs::msg::Imu>(
-                            "mecamate/imu/data",    rclcpp::SensorDataQoS());
+                    "mecarosmaster/imu/data",    rclcpp::SensorDataQoS());
         pub_rpy_     = create_publisher<geometry_msgs::msg::Vector3Stamped>(
-                            "mecamate/imu/rpy",     rclcpp::SensorDataQoS());
+                    "mecarosmaster/imu/rpy",     rclcpp::SensorDataQoS());
         pub_mag_     = create_publisher<sensor_msgs::msg::MagneticField>(
-                            "mecamate/imu/mag",     rclcpp::SensorDataQoS());
+                    "mecarosmaster/imu/mag",     rclcpp::SensorDataQoS());
         pub_odom_    = create_publisher<nav_msgs::msg::Odometry>(
-                            "mecamate/odom",        rclcpp::SensorDataQoS());
+                    "mecarosmaster/odom",        rclcpp::SensorDataQoS());
         pub_battery_ = create_publisher<sensor_msgs::msg::BatteryState>(
-                            "mecamate/battery",     10);
+                    "mecarosmaster/battery",     10);
         pub_enc_     = create_publisher<std_msgs::msg::Int32MultiArray>(
-                            "mecamate/encoders",    rclcpp::SensorDataQoS());
+                    "mecarosmaster/encoders",    rclcpp::SensorDataQoS());
         pub_joint_   = create_publisher<sensor_msgs::msg::JointState>(
-                            "mecamate/joint_states", rclcpp::SensorDataQoS());
+                    "mecarosmaster/joint_states", rclcpp::SensorDataQoS());
         pub_vel_     = create_publisher<geometry_msgs::msg::TwistStamped>(
-                            "mecamate/velocity",    rclcpp::SensorDataQoS());
+                    "mecarosmaster/velocity",    rclcpp::SensorDataQoS());
 
         // ── Subscribers ───────────────────────────────────────────────────────
 
         // cmd_vel — main motion command
         sub_cmd_vel_ = create_subscription<geometry_msgs::msg::Twist>(
-            "mecamate/cmd_vel", rclcpp::SensorDataQoS(),
+            "mecarosmaster/cmd_vel", rclcpp::SensorDataQoS(),
             [this](geometry_msgs::msg::Twist::ConstSharedPtr msg) {
                 last_cmd_vel_time_ = now();
                 motor_stopped_     = false;
@@ -208,7 +208,7 @@ public:
 
         // raw motor speeds [−100..100] × 4
         sub_motors_ = create_subscription<std_msgs::msg::Float32MultiArray>(
-            "mecamate/motors/cmd", 10,
+            "mecarosmaster/motors/cmd", 10,
             [this](std_msgs::msg::Float32MultiArray::ConstSharedPtr msg) {
                 if (msg->data.size() < 4) {
                     RCLCPP_WARN(get_logger(),
@@ -221,7 +221,7 @@ public:
 
         // PWM servo positions [0..180] × 4
         sub_pwm_servos_ = create_subscription<std_msgs::msg::Float32MultiArray>(
-            "mecamate/pwm_servos/cmd", 10,
+            "mecarosmaster/pwm_servos/cmd", 10,
             [this](std_msgs::msg::Float32MultiArray::ConstSharedPtr msg) {
                 if (msg->data.size() < 4) {
                     RCLCPP_WARN(get_logger(),
@@ -237,7 +237,7 @@ public:
 
         // LED color (ColorRGBA, values [0..1])
         sub_leds_ = create_subscription<std_msgs::msg::ColorRGBA>(
-            "mecamate/leds/color", 10,
+            "mecarosmaster/leds/color", 10,
             [this](std_msgs::msg::ColorRGBA::ConstSharedPtr msg) {
                 robot_->set_colorful_lamps(
                     0,
@@ -248,7 +248,7 @@ public:
 
         // Arm — 6-DOF joint trajectory (positions in degrees)
         sub_arm_ = create_subscription<trajectory_msgs::msg::JointTrajectory>(
-            "mecamate/arm/joint_cmd", 10,
+            "mecarosmaster/arm/joint_cmd", 10,
             [this](trajectory_msgs::msg::JointTrajectory::ConstSharedPtr msg) {
                 if (msg->points.empty()) return;
                 const auto& pt = msg->points.front();
@@ -272,14 +272,14 @@ public:
 
         // Ackermann steering angle [−45..45] degrees
         sub_akm_ = create_subscription<std_msgs::msg::Int32>(
-            "mecamate/akm/steering", 10,
+            "mecarosmaster/akm/steering", 10,
             [this](std_msgs::msg::Int32::ConstSharedPtr msg) {
                 robot_->set_akm_steering_angle(msg->data, /*ctrl_car=*/true);
             });
 
         // Arm enable/disable
         sub_arm_enable_ = create_subscription<std_msgs::msg::Bool>(
-            "mecamate/arm/enable", 10,
+            "mecarosmaster/arm/enable", 10,
             [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
                 robot_->set_uart_servo_ctrl_enable(msg->data);
                 RCLCPP_INFO(get_logger(), "Arm ctrl %s",
@@ -288,7 +288,7 @@ public:
 
         // ── Services ──────────────────────────────────────────────────────────
         srv_reset_flash_ = create_service<std_srvs::srv::Trigger>(
-            "mecamate/reset_flash",
+            "mecarosmaster/reset_flash",
             [this](std_srvs::srv::Trigger::Request::ConstSharedPtr,
                    std_srvs::srv::Trigger::Response::SharedPtr res) {
                 robot_->reset_flash_value();
@@ -297,7 +297,7 @@ public:
             });
 
         srv_reset_car_ = create_service<std_srvs::srv::Trigger>(
-            "mecamate/reset_car",
+            "mecarosmaster/reset_car",
             [this](std_srvs::srv::Trigger::Request::ConstSharedPtr,
                    std_srvs::srv::Trigger::Response::SharedPtr res) {
                 robot_->reset_car_state();
@@ -306,7 +306,7 @@ public:
             });
 
         srv_beep_ = create_service<std_srvs::srv::Trigger>(
-            "mecamate/beep",
+            "mecarosmaster/beep",
             [this](std_srvs::srv::Trigger::Request::ConstSharedPtr,
                    std_srvs::srv::Trigger::Response::SharedPtr res) {
                 robot_->set_beep(200);
@@ -315,7 +315,7 @@ public:
             });
 
         srv_stop_ = create_service<std_srvs::srv::Trigger>(
-            "mecamate/stop",
+            "mecarosmaster/stop",
             [this](std_srvs::srv::Trigger::Request::ConstSharedPtr,
                    std_srvs::srv::Trigger::Response::SharedPtr res) {
                 stopMotors();
@@ -324,7 +324,7 @@ public:
             });
 
         srv_clear_odom_ = create_service<std_srvs::srv::Trigger>(
-            "mecamate/clear_odom",
+            "mecarosmaster/clear_odom",
             [this](std_srvs::srv::Trigger::Request::ConstSharedPtr,
                    std_srvs::srv::Trigger::Response::SharedPtr res) {
                 std::lock_guard<std::mutex> lk(pose_mutex_);
@@ -347,7 +347,7 @@ public:
             std::bind(&MecarosmasterNode::timerCallback, this));
 
         RCLCPP_INFO(get_logger(),
-            "mecamate_node ready\n"
+            "mecarosmaster_node ready\n"
             "  port=%s  car_type=%d  rate=%.0f Hz\n"
             "  publish_tf=%d  cmd_vel_timeout=%.2f s",
             params_.serial_port.c_str(), params_.car_type,

@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <ros2_control name="MecarosmasterSystem" type="system">
+    <hardware>
+      <plugin>mecarosmaster_ros2_control/MecarosmasterHardware</plugin>
+      <param name="serial_port">$(arg serial_port)</param>
+      <param name="car_type">$(arg car_type)</param>
+      <param name="cmd_delay">0.002</param>
+      <param name="debug">false</param>
+      <param name="ticks_per_rev">1625</param>
+      <param name="wheel_radius">0.045</param>
+      <param name="wheel_sep_x">0.14</param>
+      <param name="wheel_sep_y">0.12</param>
+    </hardware>
+
+    <joint name="wheel_fl_joint">
+      <command_interface name="velocity" />
+      <state_interface name="position" />
+      <state_interface name="velocity" />
+    </joint>
+    <joint name="wheel_fr_joint">
+      <command_interface name="velocity" />
+      <state_interface name="position" />
+      <state_interface name="velocity" />
+    </joint>
+    <joint name="wheel_rl_joint">
+      <command_interface name="velocity" />
+      <state_interface name="position" />
+      <state_interface name="velocity" />
+    </joint>
+    <joint name="wheel_rr_joint">
+      <command_interface name="velocity" />
+      <state_interface name="position" />
+      <state_interface name="velocity" />
+    </joint>
+  </ros2_control>
+</robot>
