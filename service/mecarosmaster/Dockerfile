@@ -1,11 +1,15 @@
 ARG ROS_DISTRO=humble
 FROM ros:${ROS_DISTRO}-ros-base AS base
 
-ARG DEBIAN_FRONTEND=noninteractive
+# ✅ Re-déclarer après FROM
 ARG ROS_DISTRO=humble
+ARG USER_ID=1000
+ARG GROUP_ID=1000
+ARG DEBIAN_FRONTEND=noninteractive
 
 ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig
 
+# ✅ Tout en ROOT : apt, rosdep, colcon, créer l'utilisateur
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake git pkg-config \
     python3-dev python3-pip \
@@ -31,25 +35,47 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN rosdep init 2>/dev/null || true && rosdep update
 
-# ✅ Chemin depuis la racine du projet (context: ../)
+# Créer l'utilisateur (toujours en root)
+RUN groupadd -g ${GROUP_ID} rosdev && \
+    useradd -u ${USER_ID} -g ${GROUP_ID} -m -s /bin/bash rosdev && \
+    usermod -aG dialout rosdev
+
+# Préparer le workspace avec les bons droits
+RUN mkdir -p /mecarosmaster_ws && \
+    chown -R ${USER_ID}:${GROUP_ID} /mecarosmaster_ws
+
 COPY mecarosmaster_ws/src /mecarosmaster_ws/src
 WORKDIR /mecarosmaster_ws
 
 RUN bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
-    rosdep install --from-paths src --ignore-src -r -y"
+    if [ \"\$(find src -name 'package.xml' | wc -l)\" -gt 0 ]; then \
+        rosdep install --from-paths src --ignore-src -r -y && \
+        colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release; \
+    else \
+        echo '[INFO] Aucun package, build ignoré.'; \
+    fi && \
+    rm -rf build log /root/.ros"
 
-RUN bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
-    colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release"
-
-RUN rm -rf build log /tmp/* /root/.ros
-
+# Sourcing pour root (sessions debug)
 RUN printf '%s\n' \
     "source /opt/ros/${ROS_DISTRO}/setup.bash" \
     "[ -f /mecarosmaster_ws/install/setup.bash ] && source /mecarosmaster_ws/install/setup.bash" \
     >> /root/.bashrc
 
-# ✅ Chemin depuis la racine du projet
+# Sourcing pour rosdev
+RUN printf '%s\n' \
+    "source /opt/ros/${ROS_DISTRO}/setup.bash" \
+    "[ -f /mecarosmaster_ws/install/setup.bash ] && source /mecarosmaster_ws/install/setup.bash" \
+    >> /home/rosdev/.bashrc
+
+# Donner les droits finaux sur tout le workspace à rosdev
+RUN chown -R ${USER_ID}:${GROUP_ID} /mecarosmaster_ws
+
 COPY docker/entrypoints/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
+
+# ✅ Basculer vers rosdev seulement à la toute fin
+USER rosdev
+
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["bash"]
