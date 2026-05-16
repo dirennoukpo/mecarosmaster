@@ -218,6 +218,9 @@ activemq-data/
 
 # Environments
 .env
+.env.*
+!.env.mecarosmaster.example
+!.env.workstation.example
 .envrc
 .venv
 venv/
