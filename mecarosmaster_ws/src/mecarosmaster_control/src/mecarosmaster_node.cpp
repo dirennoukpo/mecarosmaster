@@ -3,16 +3,12 @@
 **
 ** Made by dirennoukpo  <diren.noukpo@epitech.eu>
 **
-** Corrections vs version précédente :
-**   • cmd_vel topic renommé "cmd_vel" (sans namespace) pour compatibilité
-**     Navigation Stack et teleop_twist_keyboard
-**   • joint_states publié sur "/joint_states" (requis par robot_state_publisher)
-**   • odom      publié sur "/odom"
-**   • Watchdog thread-safe (std::atomic)
-**   • Intégration d'odométrie : utilise les données motion du robot (pas DR pur)
-**   • publishJointStates : vitesses calculées par différenciation des encodeurs
-**   • Suppression de la dépendance tf2_geometry_msgs (non utilisée)
-**   • RCLCPP_INFO_ONCE au lieu de double RCLCPP_INFO dans le constructeur
+** Corrections v4 :
+**   • BUG 3 RÉGLÉ : publishJointStates() utilisait wheel_fl_joint etc.
+**     → noms corrigés : front_left_joint / front_right_joint / back_left_joint / back_right_joint
+**     (doivent correspondre EXACTEMENT aux noms dans l'URDF yahboomcar_X3.urdf)
+**   • Ordre des joints aligné avec le plugin hardware :
+**     [0]=front_left  [1]=front_right  [2]=back_left  [3]=back_right
 */
 
 #include <rclcpp/rclcpp.hpp>
@@ -174,13 +170,11 @@ public:
         pub_enc_     = create_publisher<std_msgs::msg::Int32MultiArray>(
                        "mecarosmaster/encoders",    sensor_qos);
         pub_joint_   = create_publisher<sensor_msgs::msg::JointState>(
-                       "joint_states",              sensor_qos);  // topic standard RSP
+                       "joint_states",              sensor_qos);
         pub_vel_     = create_publisher<geometry_msgs::msg::TwistStamped>(
                        "mecarosmaster/velocity",    sensor_qos);
 
         // ── Subscribers ───────────────────────────────────────────────────────
-
-        // cmd_vel — commande principale de mouvement (compatible Nav2 / teleop)
         sub_cmd_vel_ = create_subscription<geometry_msgs::msg::Twist>(
             "cmd_vel", rclcpp::SensorDataQoS(),
             [this](geometry_msgs::msg::Twist::ConstSharedPtr msg) {
@@ -191,7 +185,6 @@ public:
                     msg->linear.x, msg->linear.y, msg->angular.z);
             });
 
-        // Vitesses moteurs brutes [−100..100] × 4
         sub_motors_ = create_subscription<std_msgs::msg::Float32MultiArray>(
             "mecarosmaster/motors/cmd", 10,
             [this](std_msgs::msg::Float32MultiArray::ConstSharedPtr msg) {
@@ -206,7 +199,6 @@ public:
                     msg->data[2], msg->data[3]);
             });
 
-        // Servos PWM [0..180] × 4
         sub_pwm_servos_ = create_subscription<std_msgs::msg::Float32MultiArray>(
             "mecarosmaster/pwm_servos/cmd", 10,
             [this](std_msgs::msg::Float32MultiArray::ConstSharedPtr msg) {
@@ -223,7 +215,6 @@ public:
                     static_cast<int>(msg->data[3]));
             });
 
-        // Couleur LED (ColorRGBA, valeurs [0..1])
         sub_leds_ = create_subscription<std_msgs::msg::ColorRGBA>(
             "mecarosmaster/leds/color", 10,
             [this](std_msgs::msg::ColorRGBA::ConstSharedPtr msg) {
@@ -234,7 +225,6 @@ public:
                     static_cast<int>(std::clamp(msg->b, 0.f, 1.f) * 255));
             });
 
-        // Bras 6-DOF — JointTrajectory (positions en degrés)
         sub_arm_ = create_subscription<trajectory_msgs::msg::JointTrajectory>(
             "mecarosmaster/arm/joint_cmd", 10,
             [this](trajectory_msgs::msg::JointTrajectory::ConstSharedPtr msg) {
@@ -249,21 +239,18 @@ public:
                 int run_time = static_cast<int>(
                     rclcpp::Duration(pt.time_from_start).seconds() * 1000.0);
                 run_time = std::clamp(run_time, 0, 2000);
-
                 std::vector<int> angles(6);
                 for (int i = 0; i < 6; ++i)
                     angles[i] = static_cast<int>(pt.positions[i]);
                 robot_->set_uart_servo_angle_array(angles, run_time);
             });
 
-        // Direction Ackermann [−45..45] degrés
         sub_akm_ = create_subscription<std_msgs::msg::Int32>(
             "mecarosmaster/akm/steering", 10,
             [this](std_msgs::msg::Int32::ConstSharedPtr msg) {
                 robot_->set_akm_steering_angle(msg->data, true);
             });
 
-        // Activation/désactivation du bras
         sub_arm_enable_ = create_subscription<std_msgs::msg::Bool>(
             "mecarosmaster/arm/enable", 10,
             [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
@@ -348,20 +335,16 @@ private:
         last_publish_time_ = stamp;
         if (dt <= 0.0 || dt > 1.0) dt = 1.0 / params_.publish_rate;
 
-        // Watchdog cmd_vel
         checkCmdVelTimeout(stamp);
 
-        // Vitesses depuis le robot (rapport automatique)
         double vx = 0, vy = 0, vz = 0;
         robot_->get_motion_data(vx, vy, vz);
 
-        // Intégration de pose
         {
             std::lock_guard<std::mutex> lk(pose_mutex_);
             pose_.integrate(vx, vy, vz, dt);
         }
 
-        // Publications
         publishImu(stamp);
         publishRpy(stamp);
         publishMag(stamp);
@@ -382,10 +365,8 @@ private:
         if (params_.cmd_vel_timeout <= 0.0) return;
         if (motor_stopped_.load(std::memory_order_relaxed)) return;
 
-        const int64_t last_ns =
-            last_cmd_vel_time_.load(std::memory_order_relaxed);
-        const double elapsed =
-            (now_t.nanoseconds() - last_ns) * 1e-9;
+        const int64_t last_ns = last_cmd_vel_time_.load(std::memory_order_relaxed);
+        const double elapsed  = (now_t.nanoseconds() - last_ns) * 1e-9;
 
         if (elapsed > params_.cmd_vel_timeout) {
             stopMotors();
@@ -442,7 +423,6 @@ private:
         pub_imu_->publish(msg);
     }
 
-    // ── RPY degrés ────────────────────────────────────────────────────────────
     void publishRpy(const rclcpp::Time& stamp)
     {
         double roll, pitch, yaw;
@@ -457,7 +437,6 @@ private:
         pub_rpy_->publish(msg);
     }
 
-    // ── sensor_msgs/MagneticField ─────────────────────────────────────────────
     void publishMag(const rclcpp::Time& stamp)
     {
         double mx, my, mz;
@@ -476,9 +455,7 @@ private:
         pub_mag_->publish(msg);
     }
 
-    // ── nav_msgs/Odometry ─────────────────────────────────────────────────────
-    void publishOdom(const rclcpp::Time& stamp,
-                     double vx, double vy, double vz)
+    void publishOdom(const rclcpp::Time& stamp, double vx, double vy, double vz)
     {
         OdomPose p;
         {
@@ -516,7 +493,6 @@ private:
         pub_odom_->publish(msg);
     }
 
-    // ── TF2 odom → base_link ──────────────────────────────────────────────────
     void broadcastOdomTf(const rclcpp::Time& stamp)
     {
         OdomPose p;
@@ -542,7 +518,6 @@ private:
         tf_broadcaster_->sendTransform(tf);
     }
 
-    // ── sensor_msgs/BatteryState ──────────────────────────────────────────────
     void publishBattery(const rclcpp::Time& stamp)
     {
         constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
@@ -565,7 +540,6 @@ private:
         pub_battery_->publish(msg);
     }
 
-    // ── std_msgs/Int32MultiArray — compteurs encodeurs bruts ──────────────────
     void publishEncoders(const rclcpp::Time& /*stamp*/)
     {
         int m1, m2, m3, m4;
@@ -576,8 +550,9 @@ private:
         pub_enc_->publish(msg);
     }
 
-    // ── sensor_msgs/JointState — positions et vitesses roues ─────────────────
-    // Publie sur "/joint_states" — topic standard consommé par robot_state_publisher
+    // ── sensor_msgs/JointState ────────────────────────────────────────────────
+    // BUG 3 RÉGLÉ : noms alignés avec l'URDF (front_left_joint, etc.)
+    // Ordre : [0]=front_left [1]=front_right [2]=back_left [3]=back_right
     void publishJointStates(const rclcpp::Time& stamp, double dt)
     {
         int enc[4];
@@ -588,8 +563,15 @@ private:
 
         sensor_msgs::msg::JointState msg;
         msg.header.stamp = stamp;
-        msg.name     = {"wheel_fl_joint", "wheel_fr_joint",
-                        "wheel_rl_joint", "wheel_rr_joint"};
+
+        // ── CORRECTION : noms correspondant EXACTEMENT à l'URDF ──────────────
+        msg.name = {
+            "front_left_joint",   // [0]  était "wheel_fl_joint" → FAUX
+            "front_right_joint",  // [1]  était "wheel_fr_joint" → FAUX
+            "back_left_joint",    // [2]  était "wheel_rl_joint" → FAUX
+            "back_right_joint"    // [3]  était "wheel_rr_joint" → FAUX
+        };
+
         msg.position.resize(4);
         msg.velocity.resize(4);
 
@@ -605,7 +587,6 @@ private:
         pub_joint_->publish(msg);
     }
 
-    // ── geometry_msgs/TwistStamped ────────────────────────────────────────────
     void publishVelocity(const rclcpp::Time& stamp,
                          double vx, double vy, double vz)
     {
@@ -618,7 +599,6 @@ private:
         pub_vel_->publish(msg);
     }
 
-    // ── Callback paramètres dynamiques ────────────────────────────────────────
     rcl_interfaces::msg::SetParametersResult
     onSetParameters(const std::vector<rclcpp::Parameter>& params)
     {
@@ -649,15 +629,12 @@ private:
     std::mutex       pose_mutex_;
     rclcpp::Time     last_publish_time_;
 
-    // Watchdog thread-safe (évite mutex dans les callbacks subscriber)
     std::atomic<int64_t> last_cmd_vel_time_{0};
     std::atomic<bool>    motor_stopped_{true};
 
-    // Encodeurs précédents + position angulaire intégrée des joints
     std::array<int, 4>    prev_enc_  {0, 0, 0, 0};
     std::array<double, 4> joint_pos_ {0.0, 0.0, 0.0, 0.0};
 
-    // Publishers
     rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr              pub_imu_;
     rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>::SharedPtr pub_rpy_;
     rclcpp::Publisher<sensor_msgs::msg::MagneticField>::SharedPtr    pub_mag_;
@@ -667,7 +644,6 @@ private:
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr       pub_joint_;
     rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr   pub_vel_;
 
-    // Subscribers
     rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr             sub_cmd_vel_;
     rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr      sub_motors_;
     rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr      sub_pwm_servos_;
@@ -676,7 +652,6 @@ private:
     rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr                  sub_akm_;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr                   sub_arm_enable_;
 
-    // Services
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_reset_flash_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_reset_car_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_beep_;
