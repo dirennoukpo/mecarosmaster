@@ -2,17 +2,14 @@
 ** mecarosmaster_hardware.hpp  —  ros2_control SystemInterface pour Mecarosmaster
 ** Made by dirennoukpo  <diren.noukpo@epitech.eu>
 **
-** Corrections v3 :
-**   • Ordre joints aligné avec l'URDF réel Yahboom X3 :
-**       [0]=front_left_joint  [1]=front_right_joint
-**       [2]=back_left_joint   [3]=back_right_joint
-**   • Dimensions géométriques corrigées depuis l'URDF :
-**       wheel_sep_x = 0.08 m (demi-empattement)
-**       wheel_sep_y = 0.0845 m (demi-voie)
-**   • on_shutdown() ajouté
-**   • read() : protection dt invalide
-**   • write() : dead-band + arrêt propre si commandes nulles
-**   • Validation interfaces URDF dans on_init()
+** Corrections v4 :
+**   • write() : cinématique DIFF DRIVE (roues à crampons X3, pas mecanum)
+**       Le diff_drive_controller écrit des rad/s individuels par joint.
+**       On convertit : vx = r * (w_right + w_left) / 2
+**                      wz = r * (w_right - w_left) / wheel_separation_y
+**       puis on appelle set_car_motion(vx, 0, wz).
+**   • computeBodyVelocity() supprimé (était la cinématique mecanum → fausse)
+**   • read() inchangé
 */
 
 #pragma once
@@ -56,37 +53,25 @@ public:
     return_type write(const rclcpp::Time&, const rclcpp::Duration&) override;
 
 private:
-    // ── Paramètres URDF ───────────────────────────────────────────────────────
     std::string serial_port_   = "/dev/myserial";
     int         car_type_      = 1;
     double      cmd_delay_     = 0.002;
     bool        debug_         = false;
     double      ticks_per_rev_ = 1625.0;
-    double      wheel_radius_  = 0.045;   // [m]
-    // Demi-dimensions depuis l'URDF Yahboom X3 :
-    //   front_left  x= 0.08  y= 0.084492
-    //   back_left   x=-0.08  y= 0.084492
-    //   → demi-empattement = 0.08 m, demi-voie = 0.0845 m
-    double      wheel_sep_x_   = 0.08;    // demi-empattement [m]
-    double      wheel_sep_y_   = 0.0845;  // demi-voie [m]
-    double      cmd_deadband_  = 1e-4;    // [rad/s]
+    double      wheel_radius_  = 0.045;     // [m]
+    double      wheel_sep_y_   = 0.169;     // [m]  voie totale (FL↔FR ou RL↔RR)
+    double      cmd_deadband_  = 1e-4;      // [rad/s]
 
     std::unique_ptr<Mecarosmaster> robot_;
 
-    // Ordre : [0]=FL [1]=FR [2]=RL [3]=RR
-    // (front_left_joint, front_right_joint, back_left_joint, back_right_joint)
+    // Ordre imposé par le bloc <ros2_control> du xacro :
+    // [0]=front_left_joint  [1]=front_right_joint
+    // [2]=back_left_joint   [3]=back_right_joint
     static constexpr int N = 4;
-    std::array<double, N> hw_pos_ {0, 0, 0, 0};
-    std::array<double, N> hw_vel_ {0, 0, 0, 0};
-    std::array<double, N> hw_cmd_ {0, 0, 0, 0};
-    std::array<int,    N> prev_enc_ {0, 0, 0, 0};
-
-    // Cinématique directe mécanums :
-    //   vx = r/4 * ( w0 + w1 + w2 + w3)
-    //   vy = r/4 * (-w0 + w1 + w2 - w3)
-    //   vz = r/(4*(lx+ly)) * (-w0 + w1 - w2 + w3)
-    // w0=FL w1=FR w2=RL w3=RR, convention ROS (X=avant, Y=gauche)
-    void computeBodyVelocity(double& vx, double& vy, double& vz) const;
+    std::array<double, N> hw_pos_  {0, 0, 0, 0};
+    std::array<double, N> hw_vel_  {0, 0, 0, 0};
+    std::array<double, N> hw_cmd_  {0, 0, 0, 0};
+    std::array<int,    N> prev_enc_{0, 0, 0, 0};
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -108,8 +93,7 @@ MecarosmasterHardware::on_init(const hardware_interface::HardwareInfo& info)
     debug_         = (param("debug", "false") == "true");
     ticks_per_rev_ = std::stod(param("ticks_per_rev", "1625"));
     wheel_radius_  = std::stod(param("wheel_radius",  "0.045"));
-    wheel_sep_x_   = std::stod(param("wheel_sep_x",   "0.08"));
-    wheel_sep_y_   = std::stod(param("wheel_sep_y",   "0.0845"));
+    wheel_sep_y_   = std::stod(param("wheel_sep_y",   "0.169"));
     cmd_deadband_  = std::stod(param("cmd_deadband",  "0.0001"));
 
     if (info_.joints.size() != 4) {
@@ -118,21 +102,18 @@ MecarosmasterHardware::on_init(const hardware_interface::HardwareInfo& info)
         return CallbackReturn::ERROR;
     }
 
-    // Vérification des interfaces déclarées pour chaque joint
     for (size_t i = 0; i < info_.joints.size(); ++i) {
         const auto& j = info_.joints[i];
         if (j.command_interfaces.size() != 1 ||
             j.command_interfaces[0].name != hardware_interface::HW_IF_VELOCITY)
         {
             RCLCPP_FATAL(rclcpp::get_logger("MecarosmasterHardware"),
-                "Joint '%s' : une command interface 'velocity' attendue",
-                j.name.c_str());
+                "Joint '%s' : une command interface 'velocity' attendue", j.name.c_str());
             return CallbackReturn::ERROR;
         }
         if (j.state_interfaces.size() != 2) {
             RCLCPP_FATAL(rclcpp::get_logger("MecarosmasterHardware"),
-                "Joint '%s' : deux state interfaces (position+velocity) attendues",
-                j.name.c_str());
+                "Joint '%s' : deux state interfaces (position+velocity) attendues", j.name.c_str());
             return CallbackReturn::ERROR;
         }
         RCLCPP_INFO(rclcpp::get_logger("MecarosmasterHardware"),
@@ -140,10 +121,8 @@ MecarosmasterHardware::on_init(const hardware_interface::HardwareInfo& info)
     }
 
     RCLCPP_INFO(rclcpp::get_logger("MecarosmasterHardware"),
-        "on_init OK — port=%s  car_type=%d  ticks/rev=%.0f  r=%.3f m  "
-        "sep_x=%.3f m  sep_y=%.3f m",
-        serial_port_.c_str(), car_type_, ticks_per_rev_, wheel_radius_,
-        wheel_sep_x_, wheel_sep_y_);
+        "on_init OK — port=%s  car_type=%d  ticks/rev=%.0f  r=%.3f m  sep_y=%.3f m",
+        serial_port_.c_str(), car_type_, ticks_per_rev_, wheel_radius_, wheel_sep_y_);
     return CallbackReturn::SUCCESS;
 }
 
@@ -245,36 +224,46 @@ MecarosmasterHardware::read(const rclcpp::Time&, const rclcpp::Duration& period)
 inline return_type
 MecarosmasterHardware::write(const rclcpp::Time&, const rclcpp::Duration&)
 {
-    bool all_zero = true;
-    for (int i = 0; i < N; ++i)
-        if (std::abs(hw_cmd_[i]) > cmd_deadband_) { all_zero = false; break; }
+    // ── Cinématique diff drive ────────────────────────────────────────────────
+    // Le diff_drive_controller écrit des rad/s individuels dans hw_cmd_[] :
+    //   [0]=FL  [1]=FR  [2]=RL  [3]=RR
+    //
+    // On moyenne gauche et droite (les deux roues d'un même côté doivent
+    // toujours recevoir la même commande avec ce controller).
+    //
+    //   w_left  = moyenne(hw_cmd_[0], hw_cmd_[2])   [rad/s]
+    //   w_right = moyenne(hw_cmd_[1], hw_cmd_[3])   [rad/s]
+    //
+    // Cinématique diff → vitesses corps (convention ROS REP-103) :
+    //   vx = r * (w_right + w_left) / 2             [m/s]
+    //   wz = r * (w_right - w_left) / wheel_sep_y   [rad/s]
+
+    const double w_left  = (hw_cmd_[0] + hw_cmd_[2]) * 0.5;
+    const double w_right = (hw_cmd_[1] + hw_cmd_[3]) * 0.5;
+
+    // Dead-band : si toutes les commandes sont nulles → arrêt propre
+    const bool all_zero =
+        std::abs(w_left)  <= cmd_deadband_ &&
+        std::abs(w_right) <= cmd_deadband_;
 
     if (all_zero) {
         robot_->set_car_motion(0.0, 0.0, 0.0);
-    } else {
-        double vx, vy, vz;
-        computeBodyVelocity(vx, vy, vz);
-        robot_->set_car_motion(vx, vy, vz);
+        return return_type::OK;
     }
+
+    const double vx = wheel_radius_ * (w_right + w_left) * 0.5;
+    const double wz = wheel_radius_ * (w_right - w_left) / wheel_sep_y_;
+
+    // vy = 0 : pas de déplacement latéral avec des roues à crampons
+    robot_->set_car_motion(vx, 0.0, wz);
+
+    if (debug_) {
+        RCLCPP_DEBUG(rclcpp::get_logger("MecarosmasterHardware"),
+            "write: wL=%.3f wR=%.3f → vx=%.3f wz=%.3f",
+            w_left, w_right, vx, wz);
+    }
+
     return return_type::OK;
-}
-
-inline void
-MecarosmasterHardware::computeBodyVelocity(double& vx, double& vy, double& vz) const
-{
-    // Cinématique directe mécanums (roues 45°, convention ROS REP-103)
-    // [0]=FL [1]=FR [2]=RL [3]=RR (RL = back_left, RR = back_right)
-    const double r   = wheel_radius_;
-    const double lxy = wheel_sep_x_ + wheel_sep_y_;   // L = lx + ly
-
-    const double w0 = hw_cmd_[0];  // front_left
-    const double w1 = hw_cmd_[1];  // front_right
-    const double w2 = hw_cmd_[2];  // back_left
-    const double w3 = hw_cmd_[3];  // back_right
-
-    vx = (r / 4.0) * ( w0 + w1 + w2 + w3);
-    vy = (r / 4.0) * (-w0 + w1 + w2 - w3);   // vy positif = gauche (ROS REP-103)
-    vz = (r / (4.0 * lxy)) * (-w0 + w1 - w2 + w3);
 }
 
 }  // namespace mecarosmaster_ros2_control
