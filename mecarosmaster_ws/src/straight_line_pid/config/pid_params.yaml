@@ -1,0 +1,37 @@
+# straight_line_pid configuration
+#
+# Tuning guide:
+#   1. Start with Kp alone (Ki=0, Kd=0). Increase until robot corrects
+#      heading without oscillating.
+#   2. Add Kd to dampen oscillations.
+#   3. Add small Ki only if steady-state drift persists.
+#
+# Runtime tuning (no restart needed):
+#   ros2 param set /straight_line_pid pid.p 1.5
+#   ros2 param set /straight_line_pid pid.d 0.15
+
+straight_line_pid:
+  ros__parameters:
+
+    # Control loop frequency (Hz)
+    # Must match the publish rate of your IMU for best results
+    control_frequency: 50.0
+
+    pid:
+      # Proportional gain – main correction force
+      # Too high → oscillation. Too low → drift not corrected.
+      p: 1.0
+
+      # Integral gain – eliminates steady-state yaw offset
+      # Keep very small. Too high → windup, slow oscillation.
+      i: 0.01
+
+      # Derivative gain – damping, reduces overshoot
+      # Increase if robot oscillates with P alone.
+      d: 0.1
+
+      # Integral clamping (prevents windup)
+      i_clamp: 0.5
+
+      # Anti-windup: stops integrating when output is saturated
+      antiwindup: true

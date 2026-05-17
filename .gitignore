@@ -3,6 +3,7 @@ mecarosmaster_ws/install
 mecarosmaster_ws/log
 # Prerequisites
 *.d
+core.*
 
 # Compiled Object files
 *.slo
