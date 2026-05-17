@@ -12,9 +12,9 @@ StraightLinePidNode::StraightLinePidNode(const rclcpp::NodeOptions & options)
 : rclcpp::Node("straight_line_pid", options)
 {
   this->declare_parameter("control_frequency", 50.0);
-  this->declare_parameter("pid.p",       0.0);
-  this->declare_parameter("pid.i",       0.0);
-  this->declare_parameter("pid.d",       0.0);
+  this->declare_parameter("pid.p",       1.0);
+  this->declare_parameter("pid.i",       0.01);
+  this->declare_parameter("pid.d",       0.1);
   this->declare_parameter("pid.i_clamp", 0.5);
 
   control_frequency_ = this->get_parameter("control_frequency").as_double();

@@ -54,14 +54,14 @@ diff_drive_controller:
 
     # ── Limites ───────────────────────────────────────────────────────────────
     linear.x.has_velocity_limits:     true
-    linear.x.max_velocity:            0.5    # [m/s]
+    linear.x.max_velocity:            0.8    # [m/s]
     linear.x.has_acceleration_limits: true
-    linear.x.max_acceleration:        1.0    # [m/s²]
+    linear.x.max_acceleration:        0.5    # [m/s²]
 
     angular.z.has_velocity_limits:     true
-    angular.z.max_velocity:            2.0   # [rad/s]
+    angular.z.max_velocity:            1.5   # [rad/s]
     angular.z.has_acceleration_limits: true
-    angular.z.max_acceleration:        4.0   # [rad/s²]
+    angular.z.max_acceleration:        3.0   # [rad/s²]
 
     # ── Topics ────────────────────────────────────────────────────────────────
     publish_rate: 50.0
