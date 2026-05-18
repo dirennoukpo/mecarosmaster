@@ -796,19 +796,43 @@ MecarosmasterHardware::publishSensors()
     {
         sensor_msgs::msg::BatteryState msg;
         msg.header.stamp    = stamp;
-        msg.voltage         = static_cast<float>(robot_->get_battery_voltage());
+        msg.header.frame_id = "battery_link"; // Optionnel : repère de la batterie
+
+        // Tension mesurée en temps réel par le robot (en Volts)
+        float current_voltage = static_cast<float>(robot_->get_battery_voltage());
+        msg.voltage         = current_voltage;
         msg.present         = true;
-        msg.current         = kNaN;
-        msg.charge          = kNaN;
-        msg.capacity        = kNaN;
-        msg.design_capacity = kNaN;
-        msg.percentage      = kNaN;
+        
+        // Données dynamiques non mesurables sans capteur de courant dédié
+        msg.current         = kNaN; // Courant instantané en Ampères
+        msg.charge          = kNaN; // Charge actuelle en Ah
+
+        // Spécifications fixes de la batterie REV-31-1302
+        msg.capacity        = 3.0f; // Capacité totale actuelle (3000 mAh = 3.0 Ah)
+        msg.design_capacity = 3.0f; // Capacité nominale d'usine (3.0 Ah)
+
+        // Calcul de l'état de charge estimé (Pourcentage entre 0.0 et 1.0)
+        // Note : Une batterie Ni-MH 12V est pleine à environ 13.5V-14.0V et vide à 9.0V à vide
+        float min_v = 9.0f;
+        float max_v = 13.5f;
+        float pct = (current_voltage - min_v) / (max_v - min_v);
+        msg.percentage      = std::clamp(pct, 0.0f, 1.0f);
+
+        // Status de l'alimentation (Décharge lors de l'utilisation du robot)
         msg.power_supply_status     =
-            sensor_msgs::msg::BatteryState::POWER_SUPPLY_STATUS_UNKNOWN;
-        msg.power_supply_health     =
-            sensor_msgs::msg::BatteryState::POWER_SUPPLY_HEALTH_UNKNOWN;
+            sensor_msgs::msg::BatteryState::POWER_SUPPLY_STATUS_DISCHARGING;
+
+        // Santé de la batterie (Déterminée par le seuil critique de détérioration)
+        if (current_voltage < 9.0f) {
+            msg.power_supply_health = sensor_msgs::msg::BatteryState::POWER_SUPPLY_HEALTH_DEAD;
+        } else {
+            msg.power_supply_health = sensor_msgs::msg::BatteryState::POWER_SUPPLY_HEALTH_GOOD;
+        }
+
+        // Technologie chimique officielle : Nickel-Métal Hydrure
         msg.power_supply_technology =
-            sensor_msgs::msg::BatteryState::POWER_SUPPLY_TECHNOLOGY_UNKNOWN;
+            sensor_msgs::msg::BatteryState::POWER_SUPPLY_TECHNOLOGY_NIMH;
+
         pub_battery_->publish(msg);
     }
 

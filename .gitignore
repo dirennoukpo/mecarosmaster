@@ -4,7 +4,6 @@ mecarosmaster_ws/log
 # Prerequisites
 *.d
 core.*
-
 # Compiled Object files
 *.slo
 *.lo
