@@ -20,7 +20,7 @@ def generate_launch_description():
 
     # ── Arguments ──────────────────────────────────────────────────────────────
     serial_port_arg = DeclareLaunchArgument(
-        "serial_port", default_value="/dev/myserial",
+        "serial_port", default_value="/dev/ttyUSB0",
         description="Port série (ex: /dev/ttyUSB0)",
     )
     car_type_arg = DeclareLaunchArgument(

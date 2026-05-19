@@ -54,7 +54,7 @@ diff_drive_controller:
 
     # ── Limites ───────────────────────────────────────────────────────────────
     linear.x.has_velocity_limits:     true
-    linear.x.max_velocity:            5.0    # [m/s]
+    linear.x.max_velocity:            10.0    # [m/s]
     linear.x.has_acceleration_limits: true
     linear.x.max_acceleration:        1.0    # [m/s²]
 
