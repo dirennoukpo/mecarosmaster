@@ -23,7 +23,7 @@
 # =============================================================================
 
 ARG ROS_DISTRO=humble
-FROM ros:${ROS_DISTRO}-desktop AS workstation
+FROM osrf/ros:${ROS_DISTRO}-desktop-full AS workstation
 
 ARG ROS_DISTRO=humble
 ARG USER_ID=1000
