@@ -42,7 +42,7 @@ services:
 
     devices:
       # Port série YAHBOOM ERF (contrôleur base roulante)
-      - "${SERIAL_PORT:-/dev/YB-ERF01-v3.0}:${SERIAL_PORT:-/dev/YB-ERF01-v3.0}"
+      - "${SERIAL_PORT:-/dev/ttyUSB0}:${SERIAL_PORT:-/dev/ttyUSB0}"
 
     # Réseau hôte — DDS/FastRTPS nécessite l'accès direct au réseau LAN
     # (multicast/unicast UDP impossible derrière docker NAT)
