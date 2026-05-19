@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- =============================================================================
+     fastdds_workstation.xml — Profil FastDDS pour la WORKSTATION
+     Optimisé pour réseau LAN : découverte initiale unicast + plus de buffers
+     ============================================================================= -->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+
+    <transport_descriptors>
+        <!-- UDP v4 — transport principal -->
+        <transport_descriptor>
+            <transport_id>udp_transport</transport_id>
+            <type>UDPv4</type>
+            <!-- Buffers plus grands pour workstation (LiDAR, PointCloud, RGBD) -->
+            <sendBufferSize>4194304</sendBufferSize>
+            <receiveBufferSize>16777216</receiveBufferSize>
+            <non_blocking_send>true</non_blocking_send>
+            <!-- Taille max des datagrammes pour PointCloud / RGBD -->
+            <maxMessageSize>65500</maxMessageSize>
+        </transport_descriptor>
+    </transport_descriptors>
+
+    <participant profile_name="mecarosmaster_workstation_participant" is_default_profile="true">
+        <rtps>
+            <name>mecarosmaster_workstation</name>
+
+            <useBuiltinTransports>false</useBuiltinTransports>
+            <userTransports>
+                <transport_id>udp_transport</transport_id>
+            </userTransports>
+
+            <builtin>
+                <discovery_config>
+                    <discoveryProtocol>SIMPLE</discoveryProtocol>
+                    <use_SIMPLE_EndpointDiscoveryProtocol>true</use_SIMPLE_EndpointDiscoveryProtocol>
+                    <m_simpleEDP>
+                        <use_Publication_WriterANDSubscription_Reader>true</use_Publication_WriterANDSubscription_Reader>
+                        <use_Publication_ReaderANDSubscription_Writer>true</use_Publication_ReaderANDSubscription_Writer>
+                    </m_simpleEDP>
+                    <leaseDuration>
+                        <sec>30</sec>
+                        <nanosec>0</nanosec>
+                    </leaseDuration>
+                    <leaseAnnouncement>
+                        <sec>5</sec>
+                        <nanosec>0</nanosec>
+                    </leaseAnnouncement>
+                    <!-- Peers statiques : ajouter l'IP du robot ici via initialPeersList -->
+                    <!-- L'IP est injectée dynamiquement par ROS_DISCOVERY_SERVER ou peer list -->
+                </discovery_config>
+            </builtin>
+
+            <sendSocketBufferSize>4194304</sendSocketBufferSize>
+            <listenSocketBufferSize>16777216</listenSocketBufferSize>
+        </rtps>
+    </participant>
+
+</profiles>
