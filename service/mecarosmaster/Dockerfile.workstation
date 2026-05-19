@@ -1,0 +1,413 @@
+# =============================================================================
+# Dockerfile.workstation — IMAGE WORKSTATION (poste développeur / collègues)
+# SLAM, visualisation, mapping, debugging, tools ROS2 complets
+# Architecture cible : linux/amd64
+#
+# Noeuds couverts :
+#   /cartographer_ros (cartographer_ros)
+#   /slam_gmapping    (slam-toolbox)
+#   /rtabmap          (rtabmap-ros)
+#   /rgbd_sync        (rtabmap-ros)
+#   /camera/camera    (realsense2-camera)
+#   /driver_node      (rplidar-ros)
+#   /ekf_filter_node  (robot-localization)
+#   /simple_fusion_odom (robot-localization + nav2-common)
+#   /imu_filter_madgwick (imu-tools)
+#   /joint_state_publisher (joint-state-publisher)
+#   /robot_state_publisher (robot-state-publisher)
+#   /rplidar_node     (rplidar-ros)
+#   /static_transform_publisher (tf2-ros)
+#   /transform_listener_impl_* (tf2-ros)
+#   /teleop_twist_keyboard (teleop-twist-keyboard)
+#   /base_node        (robot-localization)
+# =============================================================================
+
+ARG ROS_DISTRO=humble
+FROM ros:${ROS_DISTRO}-desktop AS workstation
+
+ARG ROS_DISTRO=humble
+ARG USER_ID=1000
+ARG GROUP_ID=1000
+ARG DEBIAN_FRONTEND=noninteractive
+
+# ---------------------------------------------------------------------------
+# Variables d'environnement workstation
+# DÉFAUTS IMAGE — toutes surchargeables via env/.env + env/.env.workstation
+# ---------------------------------------------------------------------------
+ENV ROS_DISTRO=${ROS_DISTRO} \
+    PYTHONUNBUFFERED=1 \
+    PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig \
+    # ── FastDDS ─────────────────────────────────────────────────────────────
+    RMW_IMPLEMENTATION=rmw_fastrtps_cpp \
+    FASTRTPS_DEFAULT_PROFILES_FILE=/etc/fastdds/fastdds_workstation.xml \
+    # ── Display — RViz2, rqt (surchargé depuis l'hôte via .env.workstation) ─
+    DISPLAY=:0 \
+    QT_X11_NO_MITSHM=1 \
+    LIBGL_ALWAYS_INDIRECT=0 \
+    # ── Colcon ──────────────────────────────────────────────────────────────
+    COLCON_HOME=/mecarosmaster_ws/.colcon \
+    # ── Robot identity (miroir du robot pour la découverte TF) ───────────────
+    ROBOT_NAME=mecarosmaster \
+    BASE_FRAME=base_link \
+    ODOM_FRAME=odom \
+    MAP_FRAME=map \
+    # ── SLAM (surchargé dans .env.workstation) ───────────────────────────────
+    SLAM_MODE=rtabmap \
+    SLAM_SENSOR=rgbd \
+    # ── ROS2 réseau ─────────────────────────────────────────────────────────
+    ROS_DOMAIN_ID=0 \
+    ROS_LOCALHOST_ONLY=0 \
+    # ── Sim time (utile pour replay rosbag) ─────────────────────────────────
+    USE_SIM_TIME=false
+
+# ---------------------------------------------------------------------------
+# Dépendances système & outils développeur
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # ── Build tools ─────────────────────────────────────────────────────────
+    build-essential \
+    cmake \
+    git \
+    pkg-config \
+    ninja-build \
+    gdb \
+    valgrind \
+    clang-format \
+    # ── Python ──────────────────────────────────────────────────────────────
+    python3-dev \
+    python3-pip \
+    python3-colcon-common-extensions \
+    python3-colcon-mixin \
+    python3-rosdep \
+    python3-vcstool \
+    python3-argcomplete \
+    python3-numpy \
+    python3-matplotlib \
+    python3-scipy \
+    python3-transforms3d \
+    python3-yaml \
+    python3-pykdl \
+    # ── Réseau & diagnostic ──────────────────────────────────────────────────
+    wget \
+    curl \
+    ca-certificates \
+    net-tools \
+    iputils-ping \
+    iproute2 \
+    netcat-openbsd \
+    nmap \
+    # ── X11 / GUI (RViz2, rqt, Gazebo) ──────────────────────────────────────
+    x11-apps \
+    xterm \
+    mesa-utils \
+    libgl1-mesa-glx \
+    libgl1-mesa-dri \
+    libglu1-mesa \
+    libx11-dev \
+    libxext-dev \
+    libxrender-dev \
+    libxrandr-dev \
+    # ── Libs scientifiques (SLAM, vision) ───────────────────────────────────
+    libjpeg-dev \
+    libpng-dev \
+    nlohmann-json3-dev \
+    libssl-dev \
+    libboost-all-dev \
+    libeigen3-dev \
+    libpcl-dev \
+    libopencv-dev \
+    libsuitesparse-dev \
+    libgoogle-glog-dev \
+    libgflags-dev \
+    libatlas-base-dev \
+    libceres-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# FastDDS — Middleware ROS2 (identique robot pour compatibilité réseau)
+# rmw_fastrtps_cpp : implémentation principale
+# rmw_cyclonedds_cpp : alternative rapide, switchable via RMW_IMPLEMENTATION
+# Profil XML workstation : buffers larges pour PointCloud / RGBD
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-${ROS_DISTRO}-rmw-fastrtps-cpp \
+    ros-${ROS_DISTRO}-fastrtps \
+    ros-${ROS_DISTRO}-fastcdr \
+    ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-cpp \
+    ros-${ROS_DISTRO}-rosidl-typesupport-fastrtps-c \
+    # CycloneDDS — alternatif switchable (RMW_IMPLEMENTATION=rmw_cyclonedds_cpp)
+    ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# ROS2 — Core & messages (commun robot/workstation)
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-${ROS_DISTRO}-rclcpp \
+    ros-${ROS_DISTRO}-rclcpp-components \
+    ros-${ROS_DISTRO}-rclpy \
+    ros-${ROS_DISTRO}-sensor-msgs \
+    ros-${ROS_DISTRO}-geometry-msgs \
+    ros-${ROS_DISTRO}-nav-msgs \
+    ros-${ROS_DISTRO}-std-msgs \
+    ros-${ROS_DISTRO}-std-srvs \
+    ros-${ROS_DISTRO}-trajectory-msgs \
+    ros-${ROS_DISTRO}-diagnostic-msgs \
+    ros-${ROS_DISTRO}-visualization-msgs \
+    ros-${ROS_DISTRO}-action-msgs \
+    ros-${ROS_DISTRO}-builtin-interfaces \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# ROS2 — TF (transformation frames)
+# Noeuds : /static_transform_publisher  /transform_listener_impl_*
+# tf2-tools : ros2 run tf2_tools view_frames (indispensable debug workstation)
+# tf2-eigen : conversions Eigen ↔ TF (requis par rtabmap, cartographer)
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-${ROS_DISTRO}-tf2 \
+    ros-${ROS_DISTRO}-tf2-ros \
+    ros-${ROS_DISTRO}-tf2-geometry-msgs \
+    ros-${ROS_DISTRO}-tf2-msgs \
+    ros-${ROS_DISTRO}-tf2-tools \
+    ros-${ROS_DISTRO}-tf2-eigen \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# ROS2 — Build system & ament + CLI complète workstation
+# ros2cli + plugins : ros2 topic / node / service / action / param / bag / launch
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-${ROS_DISTRO}-xacro \
+    ros-${ROS_DISTRO}-ament-cmake \
+    ros-${ROS_DISTRO}-ament-cmake-python \
+    ros-${ROS_DISTRO}-rosidl-default-generators \
+    ros-${ROS_DISTRO}-rosidl-default-runtime \
+    ros-${ROS_DISTRO}-ros2cli \
+    ros-${ROS_DISTRO}-ros2topic \
+    ros-${ROS_DISTRO}-ros2node \
+    ros-${ROS_DISTRO}-ros2service \
+    ros-${ROS_DISTRO}-ros2action \
+    ros-${ROS_DISTRO}-ros2param \
+    ros-${ROS_DISTRO}-ros2bag \
+    ros-${ROS_DISTRO}-ros2launch \
+    ros-${ROS_DISTRO}-ros2run \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# ROS2 — Robot State Publisher + Joint State Publisher
+# Noeuds : /robot_state_publisher  /joint_state_publisher
+# joint-state-publisher-gui : widget Qt pour debug URDF interactif
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-${ROS_DISTRO}-robot-state-publisher \
+    ros-${ROS_DISTRO}-joint-state-publisher \
+    ros-${ROS_DISTRO}-joint-state-publisher-gui \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# ROS2 — IMU (workstation : replay, visualisation, re-filtrage)
+# Noeuds : /imu_filter_madgwick  /imu_complementary_filter
+# imu-complementary-filter : alternative légère à Madgwick
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-${ROS_DISTRO}-imu-tools \
+    ros-${ROS_DISTRO}-imu-filter-madgwick \
+    ros-${ROS_DISTRO}-imu-complementary-filter \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# ROS2 — Caméra RealSense D435i / D455 (RGB-D)
+# Noeud : /camera/camera
+# realsense2-camera : driver principal Intel RealSense
+# depth-image-proc : conversions depth → PointCloud2
+# image-pipeline : pipeline complet (rectification, stéréo, etc.)
+# vision-opencv : bridge OpenCV ↔ ROS2 (cv_bridge)
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-${ROS_DISTRO}-realsense2-camera \
+    ros-${ROS_DISTRO}-realsense2-description \
+    ros-${ROS_DISTRO}-image-transport \
+    ros-${ROS_DISTRO}-image-transport-plugins \
+    ros-${ROS_DISTRO}-compressed-image-transport \
+    ros-${ROS_DISTRO}-depth-image-proc \
+    ros-${ROS_DISTRO}-image-pipeline \
+    ros-${ROS_DISTRO}-camera-info-manager \
+    ros-${ROS_DISTRO}-camera-calibration-parsers \
+    ros-${ROS_DISTRO}-cv-bridge \
+    ros-${ROS_DISTRO}-vision-opencv \
+    ros-${ROS_DISTRO}-v4l2-camera \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# ROS2 — LiDAR RPLidar
+# Noeud : /rplidar_node  /driver_node
+# laser-geometry : LaserScan → PointCloud2
+# laser-filters : filtres sur scan (min/max range, shadow filter)
+# pointcloud-to-laserscan : PointCloud2 → LaserScan (utile workstation)
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-${ROS_DISTRO}-rplidar-ros \
+    ros-${ROS_DISTRO}-laser-geometry \
+    ros-${ROS_DISTRO}-laser-filters \
+    ros-${ROS_DISTRO}-pointcloud-to-laserscan \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# ROS2 — Localisation & odométrie
+# Noeuds : /ekf_filter_node  /simple_fusion_odom  /base_node
+# robot-localization : EKF / UKF fusion IMU + odom + GPS
+# nav2-common : utilitaires partagés Nav2 (lifecycle, params)
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-${ROS_DISTRO}-robot-localization \
+    ros-${ROS_DISTRO}-nav2-msgs \
+    ros-${ROS_DISTRO}-nav2-common \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# ROS2 — SLAM : Cartographer
+# Package : cartographer_ros
+# Noeud principal : /cartographer_node
+# cartographer-ros-msgs : messages custom cartographer (constraints, submap)
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-${ROS_DISTRO}-cartographer \
+    ros-${ROS_DISTRO}-cartographer-ros \
+    ros-${ROS_DISTRO}-cartographer-ros-msgs \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# ROS2 — SLAM : Slam Toolbox (remplace slam_gmapping en ROS2)
+# Package : slam_gmapping
+# slam-toolbox : lifelong mapping, localization, serialization carte
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-${ROS_DISTRO}-slam-toolbox \
+    && apt-get install -y --no-install-recommends ros-${ROS_DISTRO}-slam-gmapping 2>/dev/null || true \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# ROS2 — SLAM : RTAB-Map (RGB-D SLAM, LiDAR SLAM)
+# Noeuds : /rtabmap  /rgbd_sync  (via rtabmap_ros)
+# rtabmap-ros : interface ROS2 complète (subscribers, publishers, TF)
+# rtabmap-msgs : messages custom RTAB-Map (MapData, NodeData, etc.)
+# rtabmap-viz : visualiseur 3D intégré RTAB-Map (alternative RViz2)
+# rtabmap-launch : launch files prêts à l'emploi
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-${ROS_DISTRO}-rtabmap \
+    ros-${ROS_DISTRO}-rtabmap-ros \
+    ros-${ROS_DISTRO}-rtabmap-msgs \
+    ros-${ROS_DISTRO}-rtabmap-viz \
+    ros-${ROS_DISTRO}-rtabmap-launch \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# ROS2 — Téléopération
+# Noeud : /teleop_twist_keyboard
+# teleop-twist-joy : téléop joystick (PS4, Xbox)
+# joy : driver joystick générique Linux
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-${ROS_DISTRO}-teleop-twist-keyboard \
+    ros-${ROS_DISTRO}-teleop-twist-joy \
+    ros-${ROS_DISTRO}-joy \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# ROS2 — Navigation complète Nav2 (workstation : monitoring & path planning)
+# navigation2 : stack complète (planners, controllers, recovery)
+# nav2-bringup : launch files Nav2 prêts à l'emploi
+# nav2-costmap-2d : costmap global + local
+# nav2-map-server : chargement/sauvegarde cartes YAML/PGM
+# nav2-lifecycle-manager : gestion cycle de vie des noeuds Nav2
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-${ROS_DISTRO}-navigation2 \
+    ros-${ROS_DISTRO}-nav2-bringup \
+    ros-${ROS_DISTRO}-nav2-costmap-2d \
+    ros-${ROS_DISTRO}-nav2-map-server \
+    ros-${ROS_DISTRO}-nav2-lifecycle-manager \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# ROS2 — Outils visualisation (RViz2, rqt, rqt plugins)
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-${ROS_DISTRO}-rviz2 \
+    ros-${ROS_DISTRO}-rviz-common \
+    ros-${ROS_DISTRO}-rviz-default-plugins \
+    ros-${ROS_DISTRO}-rqt \
+    ros-${ROS_DISTRO}-rqt-common-plugins \
+    ros-${ROS_DISTRO}-rqt-graph \
+    ros-${ROS_DISTRO}-rqt-tf-tree \
+    ros-${ROS_DISTRO}-rqt-image-view \
+    ros-${ROS_DISTRO}-rqt-plot \
+    ros-${ROS_DISTRO}-rqt-console \
+    ros-${ROS_DISTRO}-rqt-robot-monitor \
+    ros-${ROS_DISTRO}-rqt-bag \
+    ros-${ROS_DISTRO}-ros2bag \
+    ros-${ROS_DISTRO}-rosbag2 \
+    ros-${ROS_DISTRO}-rosbag2-storage-default-plugins \
+    ros-${ROS_DISTRO}-rosbag2-compression \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# Configuration FastDDS (profil XML workstation — buffers larges LAN)
+# ---------------------------------------------------------------------------
+RUN mkdir -p /etc/fastdds
+COPY docker/config/fastdds_workstation.xml /etc/fastdds/fastdds_workstation.xml
+
+# ---------------------------------------------------------------------------
+# rosdep init + update
+# ---------------------------------------------------------------------------
+RUN rosdep init 2>/dev/null || true && rosdep update --rosdistro ${ROS_DISTRO}
+
+# ---------------------------------------------------------------------------
+# Création utilisateur rosdev
+# video : accès GPU (RViz2, mesa)
+# dialout : accès série si besoin en debug
+# ---------------------------------------------------------------------------
+RUN groupadd -g ${GROUP_ID} rosdev && \
+    useradd -u ${USER_ID} -g ${GROUP_ID} -m -s /bin/bash rosdev && \
+    usermod -aG dialout rosdev && \
+    usermod -aG video rosdev && \
+    usermod -aG plugdev rosdev
+
+# ---------------------------------------------------------------------------
+# Workspace workstation (partagé avec le robot via volume)
+# ---------------------------------------------------------------------------
+RUN mkdir -p /mecarosmaster_ws && \
+    chown -R ${USER_ID}:${GROUP_ID} /mecarosmaster_ws
+
+WORKDIR /mecarosmaster_ws
+
+# ---------------------------------------------------------------------------
+# Sourcing bashrc — root (debug) & rosdev (runtime)
+# Les variables critiques sont répétées ici pour les sessions interactives
+# ---------------------------------------------------------------------------
+RUN printf '%s\n' \
+    "source /opt/ros/${ROS_DISTRO}/setup.bash" \
+    "[ -f /mecarosmaster_ws/install/setup.bash ] && source /mecarosmaster_ws/install/setup.bash" \
+    "export RMW_IMPLEMENTATION=rmw_fastrtps_cpp" \
+    "export FASTRTPS_DEFAULT_PROFILES_FILE=/etc/fastdds/fastdds_workstation.xml" \
+    >> /root/.bashrc
+
+RUN printf '%s\n' \
+    "source /opt/ros/${ROS_DISTRO}/setup.bash" \
+    "[ -f /mecarosmaster_ws/install/setup.bash ] && source /mecarosmaster_ws/install/setup.bash" \
+    "export RMW_IMPLEMENTATION=rmw_fastrtps_cpp" \
+    "export FASTRTPS_DEFAULT_PROFILES_FILE=/etc/fastdds/fastdds_workstation.xml" \
+    >> /home/rosdev/.bashrc
+
+RUN chown -R ${USER_ID}:${GROUP_ID} /mecarosmaster_ws
+
+COPY docker/entrypoints/entrypoint_workstation.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# ✅ Basculer vers rosdev — jamais root en runtime
+USER rosdev
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["bash"]

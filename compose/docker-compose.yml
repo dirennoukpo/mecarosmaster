@@ -1,22 +1,114 @@
+# =============================================================================
+# docker-compose.yml — Stack mecarosmaster
+#
+# Services :
+#   mecarosmaster  — Robot physique (Raspberry Pi / YAHBOOM ROSMASTER, arm64)
+#   workstation    — Poste développeur (Linux amd64, SLAM + visualisation)
+#
+# Usage :
+#   Robot    : docker compose --profile robot up mecarosmaster
+#   Dev      : docker compose --profile workstation up workstation
+#   Les deux : docker compose up (nécessite réseau LAN partagé)
+#
+# Variables requises dans env/.env + env/.env.mecarosmaster / env/.env.workstation
+# =============================================================================
+
 services:
+
+  # ---------------------------------------------------------------------------
+  # Service ROBOT — Raspberry Pi / YAHBOOM ROSMASTER
+  # Contrôle moteurs, LiDAR, caméra embarquée, IMU, odométrie EKF
+  # Architecture cible : linux/arm64
+  # ---------------------------------------------------------------------------
   mecarosmaster:
     build:
       context: ../
-      dockerfile: service/mecarosmaster/Dockerfile
+      dockerfile: service/mecarosmaster/Dockerfile.mecarosmaster
       args:
-        ROS_DISTRO: ${ROS_DISTRO}
+        ROS_DISTRO: ${ROS_DISTRO:-humble}
         USER_ID: ${USER_ID:-1000}
         GROUP_ID: ${GROUP_ID:-1000}
+    image: mecarosmaster:${ROS_DISTRO:-humble}
+    container_name: mecarosmaster
     user: "${USER_ID:-1000}:${GROUP_ID:-1000}"
+
     env_file:
       - ../env/.env
+      - ../env/.env.mecarosmaster
+
     volumes:
+      # Workspace ROS2 — sources montées depuis l'hôte (hot reload dev)
       - ../mecarosmaster_ws:/mecarosmaster_ws
+
     devices:
-      - "${SERIAL_PORT}:${SERIAL_PORT}"
+      # Port série YAHBOOM ERF (contrôleur base roulante)
+      - "${SERIAL_PORT:-/dev/YB-ERF01-v3.0}:${SERIAL_PORT:-/dev/YB-ERF01-v3.0}"
+
+    # Réseau hôte — DDS/FastRTPS nécessite l'accès direct au réseau LAN
+    # (multicast/unicast UDP impossible derrière docker NAT)
     network_mode: host
+
     group_add:
+      # Accès port série sans sudo
       - dialout
+
     restart: unless-stopped
     tty: true
     stdin_open: true
+
+    profiles:
+      - robot
+
+  # ---------------------------------------------------------------------------
+  # Service WORKSTATION — Poste développeur Linux amd64
+  # SLAM (rtabmap / cartographer / slam_toolbox), RViz2, rqt, Nav2, rosbag
+  # Architecture cible : linux/amd64
+  # ---------------------------------------------------------------------------
+  workstation:
+    build:
+      context: ../
+      dockerfile: service/mecarosmaster/Dockerfile.workstation
+      args:
+        ROS_DISTRO: ${ROS_DISTRO:-humble}
+        USER_ID: ${USER_ID:-1000}
+        GROUP_ID: ${GROUP_ID:-1000}
+    image: mecarosmaster-workstation:${ROS_DISTRO:-humble}
+    container_name: mecarosmaster_workstation
+    user: "${USER_ID:-1000}:${GROUP_ID:-1000}"
+
+    env_file:
+      - ../env/.env
+      - ../env/.env.workstation
+
+    environment:
+      # X11 forwarding — requis pour RViz2 et rqt
+      # Récupéré depuis l'environnement hôte si non défini dans .env.workstation
+      DISPLAY: ${DISPLAY:-:0}
+      QT_X11_NO_MITSHM: 1
+      LIBGL_ALWAYS_INDIRECT: 0
+
+    volumes:
+      # Workspace ROS2 — sources partagées avec le service robot si développement local
+      - ../mecarosmaster_ws:/mecarosmaster_ws
+      # Cartes SLAM persistées entre les sessions
+      - ../maps:/maps
+      # Bags rosbag enregistrés depuis la workstation
+      - ../bags:/bags
+      # Socket X11 pour RViz2 / rqt
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      # Droits X11 (xauth) — généré par xhost +local:docker sur l'hôte
+      - ${XAUTHORITY:-~/.Xauthority}:/home/rosdev/.Xauthority:ro
+
+    # Réseau hôte — même raison que le robot (DDS unicast LAN)
+    network_mode: host
+
+    group_add:
+      # Accès GPU (RViz2, mesa, OpenGL)
+      - video
+
+    restart: unless-stopped
+    tty: true
+    stdin_open: true
+
+    profiles:
+      - workstation

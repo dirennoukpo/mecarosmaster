@@ -1,0 +1,67 @@
+# =============================================================================
+# Dockerfile.mecarosmaster — SERVICE ROBOT (hérite de Dockerfile.base)
+# Dédié au déploiement sur ROSMASTER-YAHBOOM / Raspberry Pi
+# Architecture cible : linux/arm64
+# =============================================================================
+
+ARG ROS_DISTRO=humble
+ARG REGISTRY=local
+
+# ---------------------------------------------------------------------------
+# Étape 1 — Image base robot (tout le hardware & middleware)
+# ---------------------------------------------------------------------------
+FROM ${REGISTRY}/mecarosmaster-base:${ROS_DISTRO} AS mecarosmaster
+
+ARG ROS_DISTRO=humble
+ARG USER_ID=1000
+ARG GROUP_ID=1000
+ARG DEBIAN_FRONTEND=noninteractive
+
+# ---------------------------------------------------------------------------
+# Variables propres au service mecarosmaster
+# DÉFAUTS IMAGE — toutes surchargeables via env/.env + env/.env.robot
+# ---------------------------------------------------------------------------
+ENV ROS_DISTRO=${ROS_DISTRO} \
+    # ── FastDDS ─────────────────────────────────────────────────────────────
+    RMW_IMPLEMENTATION=rmw_fastrtps_cpp \
+    FASTRTPS_DEFAULT_PROFILES_FILE=/etc/fastdds/fastdds_base.xml \
+    # ── Robot identity ───────────────────────────────────────────────────────
+    ROBOT_NAME=mecarosmaster \
+    BASE_FRAME=base_link \
+    ODOM_FRAME=odom \
+    MAP_FRAME=map \
+    # ── Série / hardware ────────────────────────────────────────────────────
+    # SERIAL_PORT est défini dans .env.robot (spécifique à chaque machine)
+    SERIAL_BAUDRATE=115200 \
+    # ── Capteurs (on/off par variable, pratique pour des configs terrain) ───
+    ENABLE_LIDAR=true \
+    ENABLE_CAMERA=true \
+    ENABLE_IMU=true \
+    # ── Odométrie ────────────────────────────────────────────────────────────
+    EKF_FREQUENCY=30 \
+    USE_SIM_TIME=false
+
+# ---------------------------------------------------------------------------
+# Packages ROS2 additionnels propres au service mecarosmaster
+# (tout ce qui est dans Dockerfile.base est déjà présent — pas de doublon)
+# ---------------------------------------------------------------------------
+USER root
+
+# Rien à ajouter ici pour l'instant — toutes les dépendances robot sont
+# dans Dockerfile.base. Ce fichier reste prêt à recevoir des overrides
+# spécifiques à une version du robot sans toucher à l'image base.
+# Exemple futur : un driver custom, un firmware update tool, etc.
+
+# ---------------------------------------------------------------------------
+# Entrypoint spécifique au service mecarosmaster
+# (hérite de la logique de compilation à chaud du base)
+# ---------------------------------------------------------------------------
+COPY docker/entrypoints/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+USER rosdev
+
+WORKDIR /mecarosmaster_ws
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["bash"]
