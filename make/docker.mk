@@ -14,7 +14,7 @@ REGISTRY       ?= local
 
 .PHONY: build-base
 build-base: ## Construire l'image base robot (Dockerfile.base)
-	docker build --no-cache\
+	docker build \
 		--file service/mecarosmaster/Dockerfile.base \
 		--build-arg ROS_DISTRO=$(ROS_DISTRO) \
 		--tag $(REGISTRY)/mecarosmaster-base:$(ROS_DISTRO) \
@@ -22,7 +22,7 @@ build-base: ## Construire l'image base robot (Dockerfile.base)
 
 .PHONY: build-robot
 build-robot: build-base ## Construire l'image service robot (Dockerfile.mecarosmaster)
-	docker build --no-cache\
+	docker build \
 		--file service/mecarosmaster/Dockerfile.mecarosmaster \
 		--build-arg ROS_DISTRO=$(ROS_DISTRO) \
 		--build-arg REGISTRY=$(REGISTRY) \
@@ -31,7 +31,7 @@ build-robot: build-base ## Construire l'image service robot (Dockerfile.mecarosm
 
 .PHONY: build-workstation
 build-workstation: ## Construire l'image workstation (Dockerfile.workstation)
-	docker build --no-cache\
+	docker build \
 		--file service/mecarosmaster/Dockerfile.workstation \
 		--build-arg ROS_DISTRO=$(ROS_DISTRO) \
 		--tag $(REGISTRY)/mecarosmaster-workstation:$(ROS_DISTRO) \
