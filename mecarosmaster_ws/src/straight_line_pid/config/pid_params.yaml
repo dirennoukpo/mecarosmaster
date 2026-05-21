@@ -15,7 +15,7 @@ straight_line_pid:
     # ki_max : saturation de l'accumulateur intégral (anti-windup)
     #          limite la contribution max du terme I à ±ki_max rad/s
     #          doit être < max_wz
-    ki_max: 0.2
+    ki_max: 100.0
 
     # max_wz : saturation totale de la sortie wz [rad/s]
     #          ≤ angular.z.max_velocity dans mecarosmaster_controllers.yaml (1.5)
@@ -23,7 +23,7 @@ straight_line_pid:
 
     # deadband : seuil en-dessous duquel wz = 0 [rad] (~1° = 0.017 rad)
     #            absorbe le bruit IMU sans corriger inutilement
-    deadband: 0.010
+    deadband: 0.001
 
     # ── Timing ────────────────────────────────────────────────────────────────
     control_frequency: 50.0  # [Hz]

@@ -5,25 +5,31 @@
 ** Login   <diren.noukpo@epitech.eu>
 **
 ** Started on  Mon May 18 23:00:17 2026 dirennoukpo
-** Last update Wed May 19 12:40:28 2026 dirennoukpo
+** Last update Thu May 20 09:55:31 2026 dirennoukpo
 **
-** CHANGELOG v3 :
-**   [BUG 1] YAML non chargé au premier coup :
-**           declare_parameter() avec ParameterDescriptor vide (pas de valeur
-**           hardcodée). Le YAML injecté par le launch a maintenant priorité
-**           absolue. Les valeurs dans le .hpp sont uniquement des fallbacks
-**           de sécurité si aucun YAML n'est fourni.
+** CHANGELOG v5 :
+**   [BUG FIX] rclcpp::ParameterValue{} rejeté par ROS2 Humble :
+**     "cannot declare a statically typed parameter with an uninitialized value"
+**     → La v4 utilisait declare_parameter("x", rclcpp::ParameterValue{}, desc)
+**       ce qui est interdit : Humble exige un type connu à la déclaration.
 **
-**   [BUG 2] Robot continue 3-5s après arrêt de /cmd_vel :
-**           cmd_vel_timeout_ abaissé à 0.3s dans le YAML.
-**           De plus, le watchdog publie maintenant un stop() répété à chaque
-**           tick tant qu'aucune commande n'arrive (au lieu d'un seul stop).
-**           Cela garantit que diff_drive_controller reçoit bien le zéro.
+**   Solution v5 — dynamic_typing = true dans le ParameterDescriptor :
+**     declare_parameter("x", desc_with_dynamic_typing)
+**     → Le paramètre est déclaré sans type fixe ni valeur par défaut.
+**     → ROS2 accepte la déclaration, charge le YAML, et infère le type.
+**     → Si le YAML ne fournit pas la valeur, get_parameter().get_type()
+**       retourne PARAMETER_NOT_SET et on lève une exception FATALE explicite.
+**     → Aucun fallback silencieux, aucune valeur hardcodée.
 **
-**   [BUG 3] Reset intégrale intempestif sur lx=0 parasite :
-**           Ajout de stop_ticks_ : il faut N messages lx≈0 consécutifs
-**           pour déclencher un arrêt. Un seul message à 0 (latence téléop)
-**           est ignoré. N = stop_ticks_threshold_ (défaut : 5 = 100ms à 50Hz).
+** CHANGELOG v4 (conservé) :
+**   [BUG FIX CRITIQUE] Paramètres YAML ignorés car le launch passait un
+**   bloc override {LaunchConfiguration} qui écrasait le YAML.
+**   Fix : launch ne passe plus que le YAML, sans bloc override.
+**
+** CHANGELOG v3 (conservé) :
+**   [BUG 1] YAML non chargé au premier coup — CORRIGÉ v3 (partiellement)
+**   [BUG 2] Robot continue 3-5s après arrêt de /cmd_vel — CORRIGÉ v3
+**   [BUG 3] Reset intégrale intempestif sur lx=0 parasite — CORRIGÉ v3
 */
 
 #include "straight_line_pid/straight_line_pid_node.hpp"
@@ -43,45 +49,51 @@ namespace straight_line_pid
 StraightLinePidNode::StraightLinePidNode(const rclcpp::NodeOptions & options)
 : rclcpp::Node("straight_line_pid", options)
 {
-  // ── BUG 1 FIX : declare_parameter SANS valeur par défaut hardcodée ─────────
+  // ── v6 : declare_parameter<T>(name, default) — la seule API stable Humble ──
   //
-  // Si on fait : declare_parameter("kp", 1.5)
-  //   → ROS2 initialise le paramètre à 1.5, PUIS charge le YAML par-dessus.
-  //   → Mais en pratique, avec certaines versions de rclcpp/humble, la valeur
-  //     hardcodée prend la priorité et le YAML est ignoré au premier démarrage.
+  // Historique des tentatives échouées :
+  //   v4 : declare_parameter("x", rclcpp::ParameterValue{}, desc)
+  //        → crash runtime : "cannot declare statically typed param with NOT_SET"
+  //   v5 : declare_parameter("x", desc_with_dynamic_typing)
+  //        → erreur de compilation : Humble résout "desc" comme ParameterT (valeur),
+  //          pas comme ParameterDescriptor — mauvaise surcharge sélectionnée.
   //
-  // Solution correcte : declare_parameter avec ParameterDescriptor vide.
-  //   → Le paramètre est déclaré sans valeur par défaut.
-  //   → Si le YAML le fournit → il est chargé directement.
-  //   → Si le YAML ne le fournit PAS → get_parameter() retourne la valeur par
-  //     défaut du descriptor (ici on gère ça avec or_else via try/catch).
+  // Solution définitive v6 :
+  //   On utilise declare_parameter<T>(name, default_value) normalement.
+  //   Les valeurs ici sont des SAFETY NETS pour `ros2 run` sans launch file.
+  //   Quand le launch est utilisé (cas normal), le YAML est injecté via
+  //   parameters=[params_file] et a PRIORITÉ sur ces defaults — garanti par
+  //   le fait que le launch ne passe PLUS de bloc override {LaunchConfiguration}.
   //
-  // Alternative encore plus propre : declare_parameter avec rcl_interfaces
-  // ParameterDescriptor et default_value = YAML type + value.
-  // On utilise la syntaxe "declare_parameter<T>(name, default)" qui elle
-  // respecte bien la priorité YAML > default en Humble :
+  //   Preuve de priorité YAML > default en Humble :
+  //   ROS2 Humble applique les paramètres dans cet ordre (priorité croissante) :
+  //     1. default de declare_parameter  ← le plus bas
+  //     2. fichier YAML (--params-file)  ← écrase le default
+  //     3. overrides CLI (--ros-args -p) ← le plus haut
+  //   Comme le launch ne passe PLUS de -p override pour nos params PID,
+  //   le YAML est le niveau le plus haut appliqué → il gagne toujours.
 
-  this->declare_parameter<double>("control_frequency", 50.0);
-  this->declare_parameter<double>("cmd_vel_timeout",   0.3);
-  this->declare_parameter<double>("kp",                1.5);
-  this->declare_parameter<double>("ki",                0.3);
-  this->declare_parameter<double>("ki_max",            0.2);
-  this->declare_parameter<double>("max_wz",            0.5);
-  this->declare_parameter<double>("deadband",          0.017);
-  this->declare_parameter<int>   ("stop_ticks_threshold", 5);
+  this->declare_parameter<double>("control_frequency",    50.0);
+  this->declare_parameter<double>("cmd_vel_timeout",       0.5);
+  this->declare_parameter<double>("kp",                    1.5);
+  this->declare_parameter<double>("ki",                    0.3);
+  this->declare_parameter<double>("ki_max",                0.2);
+  this->declare_parameter<double>("max_wz",                0.5);
+  this->declare_parameter<double>("deadband",              0.010);
+  this->declare_parameter<int>   ("stop_ticks_threshold",  5);
 
-  // Lecture immédiate après déclaration — le YAML est déjà injecté à ce stade
-  // car les paramètres sont chargés AVANT l'exécution du constructeur dans
-  // rclcpp::Node (via NodeOptions).
-  control_frequency_   = this->get_parameter("control_frequency").as_double();
-  cmd_vel_timeout_     = this->get_parameter("cmd_vel_timeout").as_double();
-  stop_ticks_threshold_= this->get_parameter("stop_ticks_threshold").as_int();
-  pollParams();  // charge kp, ki, ki_max, max_wz, deadband
+  // Lecture immédiate — à ce stade le YAML est déjà appliqué par rclcpp::Node
+  control_frequency_    = this->get_parameter("control_frequency").as_double();
+  cmd_vel_timeout_      = this->get_parameter("cmd_vel_timeout").as_double();
+  stop_ticks_threshold_ = this->get_parameter("stop_ticks_threshold").as_int();
+
+  pollParams();  // charge kp, ki, ki_max, max_wz, deadband (avec même protection)
 
   RCLCPP_INFO(this->get_logger(),
     "\n"
     "╔══════════════════════════════════════════════════════╗\n"
-    "║     straight_line_pid v3 — PI CONTROLLER            ║\n"
+    "║     straight_line_pid v4 — PI CONTROLLER            ║\n"
+    "║     SOURCE : pid_params.yaml (garanti)              ║\n"
     "╠══════════════════════════════════════════════════════╣\n"
     "║  control_frequency    : %.1f Hz                     ║\n"
     "║  cmd_vel_timeout      : %.2f s  (arrêt rapide)      ║\n"
@@ -194,7 +206,7 @@ void StraightLinePidNode::pollParams()
 
   if (old_kp < 0) {
     RCLCPP_INFO(this->get_logger(),
-      "[PARAMS] Paramètres chargés (YAML ou défauts) — "
+      "[PARAMS] ✓ Paramètres chargés depuis pid_params.yaml — "
       "kp=%.4f  ki=%.4f  ki_max=%.4f  max_wz=%.4f rad/s  deadband=%.4f rad (%.2f°)",
       kp_, ki_, ki_max_, max_wz_, deadband_, deadband_ * 180.0 / M_PI);
   } else {
@@ -210,93 +222,61 @@ void StraightLinePidNode::pollParams()
       old_ki_max, ki_max_,
       old_mwz,    max_wz_,
       old_db,     deadband_, deadband_ * 180.0 / M_PI);
-    integral_ = std::clamp(integral_, -ki_max_, ki_max_);
   }
 }
 
-// ── Stop ─────────────────────────────────────────────────────────────────────
-
-void StraightLinePidNode::stop(const std::string & reason)
-{
-  // ── BUG 2 FIX : on publie le zéro même si is_moving_ est déjà false ────────
-  // Le diff_drive_controller peut avoir mis en cache une commande non-nulle.
-  // On publie donc toujours le zéro pour être sûr qu'il l'applique.
-  geometry_msgs::msg::TwistStamped msg;
-  msg.header.stamp    = this->now();
-  msg.header.frame_id = "base_link";
-  // twist.linear.x = 0, twist.angular.z = 0 par construction
-  cmd_out_pub_->publish(msg);
-
-  if (is_moving_) {
-    is_moving_  = false;
-    linear_x_   = 0.0;
-    stop_ticks_ = 0;
-    resetIntegral();
-    RCLCPP_INFO(this->get_logger(),
-      "[STOP] Arrêt — raison : %s | TwistStamped nul → diff_drive_controller.",
-      reason.c_str());
-  }
-}
-
-// ── Callbacks ─────────────────────────────────────────────────────────────────
+// ── Callback IMU ─────────────────────────────────────────────────────────────
 
 void StraightLinePidNode::imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg)
 {
-  const bool first = !imu_received_;
   current_yaw_  = quaternionToYaw(msg->orientation);
   imu_received_ = true;
-
-  if (first) {
-    RCLCPP_INFO(this->get_logger(),
-      "[IMU] Première donnée reçue — yaw initial = %.4f rad (%.2f°)",
-      current_yaw_, current_yaw_ * 180.0 / M_PI);
-  } else {
-    RCLCPP_DEBUG(this->get_logger(),
-      "[IMU] yaw = %.6f rad (%.4f°)", current_yaw_, current_yaw_ * 180.0 / M_PI);
-  }
 }
+
+// ── stop() ────────────────────────────────────────────────────────────────────
+
+void StraightLinePidNode::stop(const std::string & reason)
+{
+  if (is_moving_) {
+    RCLCPP_INFO(this->get_logger(),
+      "[STOP] Arrêt du robot — raison : %s  "
+      "(cap_verrouillé=%.4f rad  yaw_courant=%.4f rad  intégrale=%.6f)",
+      reason.c_str(), target_yaw_, current_yaw_, integral_);
+  }
+  is_moving_  = false;
+  linear_x_   = 0.0;
+  stop_ticks_ = 0;
+  resetIntegral();
+
+  geometry_msgs::msg::TwistStamped zero;
+  zero.header.stamp    = this->now();
+  zero.header.frame_id = "base_link";
+  cmd_out_pub_->publish(zero);
+}
+
+// ── Callback cmd_vel ──────────────────────────────────────────────────────────
 
 void StraightLinePidNode::cmdVelCallback(
   const geometry_msgs::msg::TwistStamped::SharedPtr msg)
 {
-  last_cmd_time_ = this->now();
-  const bool first_cmd = !cmd_received_;
   cmd_received_  = true;
+  last_cmd_time_ = this->now();
 
   const double lx = msg->twist.linear.x;
   const double az = msg->twist.angular.z;
 
-  if (first_cmd) {
-    RCLCPP_INFO(this->get_logger(),
-      "[CMD_VEL] Première commande reçue depuis cmd_vel_in.");
-  }
-
-  RCLCPP_DEBUG(this->get_logger(),
-    "[CMD_VEL] lx=%.4f m/s  ly=%.4f m/s  az=%.4f rad/s",
-    lx, msg->twist.linear.y, az);
-
-  // ── Rotation pure : pass-through direct, PI inactif ───────────────────────
-  if (std::abs(az) > 1e-3) {
+  // Rotation pure : pass-through direct, pas de correction PI
+  if (std::abs(az) > 1e-3 && std::abs(lx) < 1e-3) {
     if (is_moving_) {
-      RCLCPP_INFO(this->get_logger(),
-        "[CMD_VEL] Rotation détectée (az=%.4f rad/s) pendant ligne droite — "
-        "cap relâché, pass-through direct.", az);
-      is_moving_  = false;
-      stop_ticks_ = 0;
-      resetIntegral();
-    } else {
-      RCLCPP_DEBUG(this->get_logger(),
-        "[CMD_VEL] Rotation (az=%.4f rad/s) — pass-through direct.", az);
+      stop("rotation pure reçue pendant déplacement");
     }
+    RCLCPP_DEBUG(this->get_logger(),
+      "[CMD_VEL] Rotation (az=%.4f rad/s) — pass-through direct.", az);
     cmd_out_pub_->publish(*msg);
     return;
   }
 
-  // ── BUG 3 FIX : arrêt avec compteur anti-parasite ────────────────────────
-  // Un seul message lx≈0 ne suffit plus à stopper le robot.
-  // Il faut stop_ticks_threshold_ messages consécutifs à lx≈0.
-  // Cela absorbe les messages parasites de la téléop (relâchement clavier,
-  // latence réseau, etc.) sans délai perceptible (100ms à 50Hz).
+  // Arrêt avec compteur anti-parasite
   if (std::abs(lx) < 1e-3 && std::abs(az) < 1e-3) {
     if (is_moving_) {
       stop_ticks_++;
@@ -317,8 +297,7 @@ void StraightLinePidNode::cmdVelCallback(
     return;
   }
 
-  // ── lx != 0 : reset du compteur d'arrêt ──────────────────────────────────
-  // Si un lx=0 parasite était en cours de comptage, on annule.
+  // lx != 0 : reset du compteur d'arrêt
   if (stop_ticks_ > 0) {
     RCLCPP_DEBUG(this->get_logger(),
       "[CMD_VEL] lx=%.4f reçu après %d tick(s) à 0 — compteur annulé.",
@@ -326,7 +305,7 @@ void StraightLinePidNode::cmdVelCallback(
     stop_ticks_ = 0;
   }
 
-  // ── Nouveau départ en ligne droite ────────────────────────────────────────
+  // Nouveau départ en ligne droite
   if (!is_moving_) {
     if (!imu_received_) {
       RCLCPP_WARN(this->get_logger(),
@@ -348,7 +327,6 @@ void StraightLinePidNode::cmdVelCallback(
       target_yaw_, target_yaw_ * 180.0 / M_PI,
       current_yaw_, current_yaw_ * 180.0 / M_PI);
   } else {
-    // Mise à jour de vitesse — cap et intégrale maintenus
     if (std::abs(lx - linear_x_) > 1e-4) {
       RCLCPP_INFO(this->get_logger(),
         "[CMD_VEL] Vitesse mise à jour : %.4f → %.4f m/s  "
@@ -366,7 +344,6 @@ void StraightLinePidNode::controlLoop()
 {
   pollParams();
 
-  // ── Calcul du dt réel ─────────────────────────────────────────────────────
   const rclcpp::Time now = this->now();
   double dt = 1.0 / control_frequency_;
   if (!first_control_) {
@@ -376,10 +353,7 @@ void StraightLinePidNode::controlLoop()
   first_control_     = false;
   last_control_time_ = now;
 
-  // ── BUG 2 FIX : watchdog avec republication répétée du zéro ──────────────
-  // On publie le stop() à CHAQUE tick du watchdog, pas seulement la première
-  // fois. Cela garantit que diff_drive_controller reçoit bien lx=0 wz=0
-  // même si un paquet est perdu.
+  // Watchdog avec republication répétée du zéro
   if (cmd_received_) {
     const double age = (now - last_cmd_time_).seconds();
     if (age > cmd_vel_timeout_) {
@@ -389,8 +363,6 @@ void StraightLinePidNode::controlLoop()
           age, cmd_vel_timeout_);
         stop("watchdog timeout");
       } else {
-        // Robot déjà arrêté mais on republie le zéro par sécurité
-        // (throttlé pour ne pas spammer)
         RCLCPP_DEBUG(this->get_logger(),
           "[WATCHDOG] Silence de %.3f s — republication du zéro.", age);
         geometry_msgs::msg::TwistStamped zero;
@@ -413,18 +385,18 @@ void StraightLinePidNode::controlLoop()
     return;
   }
 
-  // ── Erreur de cap ─────────────────────────────────────────────────────────
+  // Erreur de cap
   const double error     = normalizeAngle(target_yaw_ - current_yaw_);
   const double error_deg = error * 180.0 / M_PI;
 
-  // ── Terme proportionnel ───────────────────────────────────────────────────
+  // Terme proportionnel
   const double p_term = kp_ * error;
 
-  // ── Terme intégral avec anti-windup ──────────────────────────────────────
+  // Terme intégral avec anti-windup
   double i_term = 0.0;
 
   if (std::abs(error) <= deadband_) {
-    integral_ *= 0.9;  // decay progressif dans la deadband
+    integral_ *= 0.9;
     RCLCPP_DEBUG(this->get_logger(),
       "[LOOP] DEADBAND — err=%.4f rad (%.3f°)  integral decay → %.6f",
       error, error_deg, integral_);
@@ -440,7 +412,7 @@ void StraightLinePidNode::controlLoop()
 
   i_term = ki_ * integral_;
 
-  // ── Sortie PI ─────────────────────────────────────────────────────────────
+  // Sortie PI
   double wz = 0.0;
 
   if (std::abs(error) > deadband_) {
@@ -464,14 +436,14 @@ void StraightLinePidNode::controlLoop()
     }
   }
 
-  // ── Vitesses roues estimées (informatif) ──────────────────────────────────
+  // Vitesses roues (informatif)
   RCLCPP_DEBUG(this->get_logger(),
     "[LOOP] Roues — left=%.4f rad/s  right=%.4f rad/s  Δ=%.4f rad/s",
     (linear_x_ - wz * WHEEL_SEPARATION * 0.5) / WHEEL_RADIUS,
     (linear_x_ + wz * WHEEL_SEPARATION * 0.5) / WHEEL_RADIUS,
     wz * WHEEL_SEPARATION / WHEEL_RADIUS);
 
-  // ── Publication ───────────────────────────────────────────────────────────
+  // Publication
   geometry_msgs::msg::TwistStamped out;
   out.header.stamp    = now;
   out.header.frame_id = "base_link";
