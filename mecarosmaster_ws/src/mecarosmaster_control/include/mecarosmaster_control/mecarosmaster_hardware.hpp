@@ -59,7 +59,7 @@
 
 // private:
 //     // ── Paramètres hardware ───────────────────────────────────────────────────
-//     std::string serial_port_   = "/dev/myserial";
+//     std::string serial_port_   = "/dev/ttyUSB0";
 //     int         car_type_      = 1;
 //     double      cmd_delay_     = 0.002;
 //     bool        debug_         = false;
@@ -108,7 +108,7 @@
 //         return (it != info_.hardware_parameters.end()) ? it->second : dflt;
 //     };
 
-//     serial_port_   = param("serial_port",    "/dev/myserial");
+//     serial_port_   = param("serial_port",    "/dev/ttyUSB0");
 //     car_type_      = std::stoi(param("car_type",      "1"));
 //     cmd_delay_     = std::stod(param("cmd_delay",     "0.002"));
 //     debug_         = (param("debug", "false") == "true");
@@ -503,7 +503,7 @@ public:
     return_type write(const rclcpp::Time&, const rclcpp::Duration&) override;
 
 private:
-    std::string serial_port_   = "/dev/myserial";
+    std::string serial_port_   = "/dev/ttyUSB0";
     int         car_type_      = 1;
     double      cmd_delay_     = 0.002;
     bool        debug_         = false;
@@ -547,7 +547,7 @@ MecarosmasterHardware::on_init(const hardware_interface::HardwareInfo& info)
         return (it != info_.hardware_parameters.end()) ? it->second : dflt;
     };
 
-    serial_port_   = param("serial_port",    "/dev/myserial");
+    serial_port_   = param("serial_port",    "/dev/ttyUSB0");
     car_type_      = std::stoi(param("car_type",      "1"));
     cmd_delay_     = std::stod(param("cmd_delay",     "0.002"));
     debug_         = (param("debug", "false") == "true");
