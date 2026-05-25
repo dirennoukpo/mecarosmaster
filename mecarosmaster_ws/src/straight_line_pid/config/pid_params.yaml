@@ -1,30 +1,14 @@
 straight_line_pid:
   ros__parameters:
-    # ── Contrôleur PI ──────────────────────────────────────────────────────────
-    #
-    # kp  : gain proportionnel — réaction immédiate à l'erreur de cap
-    #       trop bas  → correction lente, dérive visible
-    #       trop haut → oscillations, robot zigzague
-    kp: 1.5
 
-    # ki  : gain intégral — élimine la dérive permanente due à l'asymétrie moteur
-    #       trop bas  → la dérive n'est pas entièrement corrigée
-    #       trop haut → over-correction, oscillations lentes (windup)
-    ki: 0.3
+    kp: -20.0
 
-    # ki_max : saturation de l'accumulateur intégral (anti-windup)
-    #          limite la contribution max du terme I à ±ki_max rad/s
-    #          doit être < max_wz
-    ki_max: 100.0
+    ki: 0.0
 
-    # max_wz : saturation totale de la sortie wz [rad/s]
-    #          ≤ angular.z.max_velocity dans mecarosmaster_controllers.yaml (1.5)
-    max_wz: 0.5
+    kd: 0.0
 
-    # deadband : seuil en-dessous duquel wz = 0 [rad] (~1° = 0.017 rad)
-    #            absorbe le bruit IMU sans corriger inutilement
-    deadband: 0.001
+    max_wz: 1.0
 
-    # ── Timing ────────────────────────────────────────────────────────────────
-    control_frequency: 50.0  # [Hz]
-    cmd_vel_timeout: 0.5      # [s] arrêt si aucune commande depuis N secondes
+    control_frequency: 50.0
+
+    timeout: 0.5
